@@ -1,0 +1,13 @@
+# Vocabulario (opcional) - melhora a grafia de nomes proprios e siglas.
+# Apague o que nao usar. Linhas com # sao ignoradas.
+#
+# 1) DICAS: termos escritos corretamente, um por linha (a IA tenta seguir).
+# 2) CORRECOES: linhas no formato  errado => certo  (aplicado sempre, garantido).
+
+# --- dicas de grafia ---
+Equipe DIJ, FEEES, evangelizacao espirita, Encontro Bimestral
+Synkra, AIOX
+
+# --- correcoes automaticas ---
+equipe EJ => Equipe DIJ
+equipe IJ => Equipe DIJ

@@ -1,0 +1,13 @@
+# Segredos — nunca versionar
+.env
+cookies.txt
+
+# Entradas e saídas (arquivos pesados / gerados)
+videos/
+transcricoes/
+versoes/
+
+# Dependências e temporários
+node_modules/
+audio_temp/
+*.log
