@@ -14,7 +14,8 @@
 # =====================================================================
 
 Claude Code, Anthropic, OpenAI, ChatGPT, NVIDIA, Nemotron, OpenCode
-prompt, tokens, API, landing page, open source
+O CEO e o CTO falaram sobre GPU, CPU, LLM, API e SaaS.
+prompt, tokens, open source, landing page, machine learning
 Equipe DIJ, FEEES, evangelizacao espirita, Encontro Bimestral
 Synkra, AIOX
 
@@ -36,6 +37,14 @@ Nvidia => NVIDIA
 Neumotron => Nemotron
 Nemotrom => Nemotron
 Open Code => OpenCode
+
+# --- siglas faladas em portugues ---
+# Caso real: "O CEO da NVIDIA" saiu como "O C, eu da NVIDIA".
+# Regras assim precisam ser especificas: quanto mais curto o trecho,
+# maior a chance de estragar uma frase legitima.
+C, eu da => CEO da
+C, eu do => CEO do
+C. eu da => CEO da
 
 # --- espirita / FEEES ---
 equipe EJ => Equipe DIJ
