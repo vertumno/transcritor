@@ -77,29 +77,77 @@ function ensureYtDlp() {
   }
 }
 
-/** Título e ID do vídeo sem baixar nada. */
-function getInfo(url, options = {}) {
+/**
+ * Metadados do post sem baixar o vídeo: título, ID, autor e a legenda.
+ *
+ * "Legenda" aqui é o texto que acompanha o post (a caption do Instagram,
+ * a descrição do YouTube) — não os subtítulos do áudio. O yt-dlp entrega
+ * isso no campo `description`.
+ *
+ * Usamos JSON em vez de --print porque a legenda tem várias linhas e
+ * quebraria qualquer separador de texto simples.
+ */
+function getMetadata(url, options = {}) {
+  const vazio = { title: "sem_titulo", id: "", caption: "", uploader: "" };
   try {
     const out = execFileSync(
       "yt-dlp",
       [
         ...cookieArgs(options),
-        "--no-warnings", "--no-playlist", "--encoding", "utf-8",
-        "--print", "%(title)s|||%(id)s",
+        "--dump-single-json",
+        "--no-playlist", "--no-warnings", "--encoding", "utf-8",
         url,
       ],
-      { timeout: 60000, stdio: ["pipe", "pipe", "pipe"] }
+      { timeout: 120000, stdio: ["pipe", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 }
     );
-    const [title, id] = out.toString("utf-8").trim().split("\n")[0].split("|||");
-    return { title: title || "sem_titulo", id: id || "" };
+    const data = JSON.parse(out.toString("utf-8"));
+    return {
+      title: data.title || "sem_titulo",
+      id: data.id || "",
+      caption: (data.description || "").trim(),
+      uploader: data.uploader || data.uploader_id || "",
+    };
   } catch {
-    return { title: "sem_titulo", id: "" };
+    return vazio;
   }
 }
 
+/** Título e ID do vídeo sem baixar nada. */
+function getInfo(url, options = {}) {
+  const { title, id } = getMetadata(url, options);
+  return { title, id };
+}
+
 /** Título do vídeo sem baixar nada. */
-function getTitle(url) {
-  return getInfo(url).title;
+function getTitle(url, options = {}) {
+  return getMetadata(url, options).title;
+}
+
+/**
+ * Grava a legenda do post ao lado do vídeo, para não se perder.
+ * Assim ela continua disponível quando você transcrever o arquivo depois.
+ */
+function saveCaption(videoPath, meta) {
+  if (!meta.caption) return null;
+
+  const destino = videoPath.replace(/\.[^.]+$/, "") + ".legenda.txt";
+  const cabecalho = [
+    meta.title && `Título: ${meta.title}`,
+    meta.uploader && `Autor: ${meta.uploader}`,
+    "",
+  ]
+    .filter((l) => l !== undefined && l !== false)
+    .join("\n");
+
+  fs.writeFileSync(destino, cabecalho + meta.caption + "\n", "utf-8");
+  return destino;
+}
+
+/** Lê a legenda salva ao lado de um vídeo, se existir. */
+function readCaption(videoPath) {
+  const arquivo = videoPath.replace(/\.[^.]+$/, "") + ".legenda.txt";
+  if (!fs.existsSync(arquivo)) return "";
+  return fs.readFileSync(arquivo, "utf-8").trim();
 }
 
 /** Procura no diretório um arquivo já baixado deste vídeo (pelo ID). */
@@ -158,16 +206,19 @@ function runDownload(args, destDir, id, url) {
  */
 function downloadVideo(url, destDir, options = {}) {
   const auth = cookieArgs(options);
-  const { id } = getInfo(url, options);
-  const existing = findExisting(destDir, id);
+  const meta = getMetadata(url, options);
+  const existing = findExisting(destDir, meta.id);
+
   if (existing) {
-    return { filePath: existing, alreadyExisted: true };
+    // Mesmo já baixado, garante que a legenda esteja salva
+    const captionPath = fs.existsSync(existing) ? saveCaption(existing, meta) : null;
+    return { filePath: existing, alreadyExisted: true, captionPath, meta };
   }
 
   console.log(
     `  Baixando vídeo de ${siteName(url)}${auth.length ? " (com cookies)" : ""}...`
   );
-  return runDownload(
+  const resultado = runDownload(
     [
       ...auth,
       "-f", "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b",
@@ -179,9 +230,12 @@ function downloadVideo(url, destDir, options = {}) {
       url,
     ],
     destDir,
-    id,
+    meta.id,
     url
   );
+
+  const captionPath = saveCaption(resultado.filePath, meta);
+  return { ...resultado, captionPath, meta };
 }
 
 /**
@@ -216,6 +270,9 @@ module.exports = {
   downloadAudio,
   getTitle,
   getInfo,
+  getMetadata,
+  saveCaption,
+  readCaption,
   isUrl,
   isYouTubeUrl,
   siteName,

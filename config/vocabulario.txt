@@ -1,13 +1,42 @@
-# Vocabulario (opcional) - melhora a grafia de nomes proprios e siglas.
+# Vocabulario - melhora a grafia de nomes proprios, siglas e termos tecnicos.
 # Apague o que nao usar. Linhas com # sao ignoradas.
 #
-# 1) DICAS: termos escritos corretamente, um por linha (a IA tenta seguir).
+# 1) DICAS: termos escritos corretamente (a IA tenta seguir, nao garante).
 # 2) CORRECOES: linhas no formato  errado => certo  (aplicado sempre, garantido).
+#
+# Regra pratica: se a IA erra sempre o mesmo termo, crie uma CORRECAO.
+# As correcoes ignoram maiusculas/minusculas.
 
-# --- dicas de grafia ---
+# =====================================================================
+# DICAS DE GRAFIA
+# Mantenha curto: essa lista vira o prompt enviado junto com o audio,
+# e prompt longo demais atrapalha em vez de ajudar.
+# =====================================================================
+
+Claude Code, Anthropic, OpenAI, ChatGPT, NVIDIA, Nemotron, OpenCode
+prompt, tokens, API, landing page, open source
 Equipe DIJ, FEEES, evangelizacao espirita, Encontro Bimestral
 Synkra, AIOX
 
-# --- correcoes automaticas ---
+# =====================================================================
+# CORRECOES AUTOMATICAS (garantidas)
+# =====================================================================
+
+# --- IA / tecnologia ---
+# "Claude" soa como "cloud" em portugues - o erro mais comum
+Cloud Code => Claude Code
+Claude Cod => Claude Code
+Cloud AI => Claude
+Cloud Sonnet => Claude Sonnet
+Cloud Opus => Claude Opus
+Antropic => Anthropic
+Open AI => OpenAI
+Chat GPT => ChatGPT
+Nvidia => NVIDIA
+Neumotron => Nemotron
+Nemotrom => Nemotron
+Open Code => OpenCode
+
+# --- espirita / FEEES ---
 equipe EJ => Equipe DIJ
 equipe IJ => Equipe DIJ

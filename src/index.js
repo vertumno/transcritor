@@ -30,6 +30,8 @@ const {
   downloadVideo,
   downloadAudio,
   getTitle,
+  getMetadata,
+  readCaption,
   isUrl,
   isYouTubeUrl,
 } = require("./download");
@@ -121,8 +123,13 @@ function buildSRT(segments) {
 }
 
 /** Monta o .md no mesmo formato usado pela rota do YouTube. */
-function formatLocal(title, sourcePath, result) {
+function formatLocal(title, sourcePath, result, caption = "") {
   const lines = [`# ${title}`, `Fonte: ${sourcePath}`, `Método: ${result.source}`, ""];
+
+  // A legenda do post é o texto escrito pelo autor — vale tanto quanto a fala
+  if (caption) {
+    lines.push("## Legenda do post", "", caption, "", "## Transcrição do áudio", "");
+  }
 
   const segments = result.segments || [];
   if (segments.length === 0) {
@@ -332,7 +339,7 @@ async function main() {
           skipped++;
           continue;
         }
-        const { filePath: saved, alreadyExisted } = downloadVideo(
+        const { filePath: saved, alreadyExisted, captionPath } = downloadVideo(
           item.value,
           VIDEOS_DIR,
           authOptions
@@ -340,6 +347,11 @@ async function main() {
         console.log(
           alreadyExisted ? `  Já estava baixado: ${saved}` : `  Salvo em: ${saved}`
         );
+        if (captionPath) {
+          console.log(`  Legenda do post: ${captionPath}`);
+        } else {
+          console.log("  (esse post não tem legenda)");
+        }
         console.log(`  Para transcrever: node index.js "${path.basename(saved)}"\n`);
         success++;
         continue;
@@ -347,8 +359,10 @@ async function main() {
 
       if (item.kind === "link") {
         // Site sem legenda pronta (Instagram, TikTok...): baixa o áudio
-        title = getTitle(item.value, authOptions);
+        const meta = getMetadata(item.value, authOptions);
+        title = meta.title;
         console.log(`  Título: ${title}`);
+        if (meta.caption) console.log("  Legenda do post capturada");
 
         const outPath = path.join(args.output, sanitizeFilename(title) + ".md");
         if (fs.existsSync(outPath) && !args.force && !args.stdout) {
@@ -367,7 +381,7 @@ async function main() {
             vocabularyPrompt: vocabulary.prompt,
           });
           result = applyFixesToResult(raw, vocabulary.fixes);
-          formatted = formatLocal(title, item.value, result);
+          formatted = formatLocal(title, item.value, result, meta.caption);
           console.log(`  OK - ${result.source}`);
         } finally {
           fs.rmSync(workDir, { recursive: true, force: true });
@@ -379,11 +393,7 @@ async function main() {
         });
         title = data.title;
         result = applyFixesToResult(data.result, vocabulary.fixes);
-        formatted = require("./transcriber").formatForLLM(
-          title,
-          data.url,
-          result
-        );
+        formatted = require("./youtube").formatForLLM(title, data.url, result);
       } else {
         title = path.basename(item.value, path.extname(item.value));
 
@@ -401,7 +411,12 @@ async function main() {
           vocabularyPrompt: vocabulary.prompt,
         });
         result = applyFixesToResult(raw, vocabulary.fixes);
-        formatted = formatLocal(title, item.value, result);
+
+        // Se o vídeo veio de um link, a legenda do post foi salva ao lado dele
+        const caption = readCaption(item.value);
+        if (caption) console.log("  Legenda do post encontrada");
+
+        formatted = formatLocal(title, item.value, result, caption);
         console.log(`  OK - ${result.source}`);
       }
 
