@@ -1,7 +1,7 @@
 {
   "name": "transcritor",
-  "version": "2.0.0",
-  "description": "Transcritor unificado - YouTube (legendas, custo zero) e arquivos locais (API OpenAI)",
+  "version": "3.0.0",
+  "description": "Transcritor local - roda na sua maquina com faster-whisper, sem API e sem custo",
   "main": "src/index.js",
   "bin": {
     "transcritor": "./src/index.js"
@@ -9,12 +9,16 @@
   "scripts": {
     "start": "node src/index.js",
     "transcribe": "node src/index.js",
-    "cookies": "node src/filtrar-cookies.js"
+    "cookies": "node src/filtrar-cookies.js",
+    "local": "node src/index.js"
   },
   "keywords": [
     "youtube",
     "transcription",
     "whisper",
+    "faster-whisper",
+    "local",
+    "offline",
     "ffmpeg"
   ],
   "author": "",

@@ -14,7 +14,7 @@ const os = require("os");
  */
 function extractVideoId(url) {
   const patterns = [
-    /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/|youtube\.com\/v\/|youtube\.com\/shorts\/)([a-zA-Z0-9_-]{11})/,
+    /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/|youtube\.com\/v\/|youtube\.com\/shorts\/|youtube\.com\/live\/)([a-zA-Z0-9_-]{11})/,
     /^([a-zA-Z0-9_-]{11})$/,
   ];
 
@@ -114,55 +114,43 @@ function transcribeViaYouTube(url, languages = ["pt", "pt-BR", "en", "es"]) {
   try {
     const langList = languages.join(",");
 
-    // Tenta legendas manuais primeiro (melhor qualidade)
-    try {
-      execSync(
-        `yt-dlp --write-sub --sub-lang "${langList}" --sub-format vtt --skip-download --no-warnings --encoding utf-8 -o "${outTemplate}" "${url}"`,
-        { timeout: 30000, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }
-      );
+    /**
+     * Roda o yt-dlp e aproveita o que ele tiver baixado.
+     *
+     * O erro do yt-dlp NÃO pode descartar o resultado: pedindo vários
+     * idiomas de uma vez, ele costuma baixar pt e en e só então tomar
+     * HTTP 429 no terceiro — e sai com código de erro. Checar os arquivos
+     * depois do catch recupera a legenda que já está no disco e evita
+     * mandar para a API um vídeo que tinha legenda de graça.
+     */
+    const tentar = (flag, source) => {
+      try {
+        execSync(
+          `yt-dlp ${flag} --sub-lang "${langList}" --sub-format vtt --skip-download --no-warnings --encoding utf-8 -o "${outTemplate}" "${url}"`,
+          { timeout: 60000, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }
+        );
+      } catch {
+        // Pode ter baixado parte antes de falhar; a checagem abaixo decide
+      }
 
       const subFile = findSubFile(tempDir);
-      if (subFile) {
-        const content = fs.readFileSync(subFile, "utf-8");
-        const segments = parseVTT(content);
-        if (segments.length > 0) {
-          return {
-            text: segments.map((s) => s.text).join(" "),
-            segments,
-            source: "youtube_manual_captions",
-          };
-        }
-      }
-    } catch {
-      // Sem legendas manuais, tenta auto-geradas
-    }
+      if (!subFile) return null;
 
-    // Tenta legendas auto-geradas
-    try {
-      execSync(
-        `yt-dlp --write-auto-sub --sub-lang "${langList}" --sub-format vtt --skip-download --no-warnings --encoding utf-8 -o "${outTemplate}" "${url}"`,
-        { timeout: 30000, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }
-      );
+      const segments = parseVTT(fs.readFileSync(subFile, "utf-8"));
+      if (segments.length === 0) return null;
 
-      const subFile = findSubFile(tempDir);
-      if (subFile) {
-        const content = fs.readFileSync(subFile, "utf-8");
-        const segments = parseVTT(content);
-        if (segments.length > 0) {
-          return {
-            text: segments.map((s) => s.text).join(" "),
-            segments,
-            source: "youtube_auto_captions",
-          };
-        }
-      }
-    } catch {
-      // Sem legendas disponíveis
-    }
+      return { text: segments.map((s) => s.text).join(" "), segments, source };
+    };
 
-    return null;
+    // Legendas manuais primeiro (revisadas por humanos), depois auto-geradas
+    return (
+      tentar("--write-sub", "youtube_manual_captions") ||
+      tentar("--write-auto-sub", "youtube_auto_captions")
+    );
   } finally {
-    fs.rmSync(tempDir, { recursive: true, force: true });
+    try {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    } catch {}
   }
 }
 
@@ -181,6 +169,38 @@ function findSubFile(dir) {
 }
 
 /**
+ * Baixa só o áudio do vídeo com yt-dlp e devolve o caminho do arquivo.
+ * Compartilhado pelas duas rotas de áudio (motor local e API).
+ */
+function baixarAudio(url, tempDir) {
+  const audioPath = path.join(tempDir, "audio");
+
+  // Qualidade baixa é suficiente para fala e reduz muito o tempo de download
+  execSync(
+    `yt-dlp -x --audio-format mp3 --audio-quality 9 --no-warnings --no-progress -N 8 --encoding utf-8 -o "${audioPath}.%(ext)s" "${url}"`,
+    { timeout: 3600000, stdio: ["pipe", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 }
+  );
+
+  const files = fs.readdirSync(tempDir).filter((f) => f.startsWith("audio"));
+  if (files.length === 0) throw new Error("Arquivo de áudio não encontrado");
+  return path.join(tempDir, files[0]);
+}
+
+/**
+ * Baixa o áudio e transcreve com o motor local (sem API, sem custo).
+ */
+async function transcribeViaMotorLocal(url, motorAudio) {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "yt-audio-"));
+  try {
+    return await motorAudio(baixarAudio(url, tempDir));
+  } finally {
+    try {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    } catch {}
+  }
+}
+
+/**
  * Baixa áudio com yt-dlp e transcreve com Whisper API.
  */
 async function transcribeViaWhisper(url, apiKey) {
@@ -188,19 +208,9 @@ async function transcribeViaWhisper(url, apiKey) {
   const client = new OpenAI({ apiKey });
 
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "yt-audio-"));
-  const audioPath = path.join(tempDir, "audio");
 
   try {
-    // Baixa áudio com yt-dlp (qualidade baixa é suficiente para speech)
-    execSync(
-      `yt-dlp -x --audio-format mp3 --audio-quality 9 --no-warnings --encoding utf-8 -o "${audioPath}.%(ext)s" "${url}"`,
-      { timeout: 180000, stdio: ["pipe", "pipe", "pipe"] }
-    );
-
-    // Encontra o arquivo de áudio
-    const files = fs.readdirSync(tempDir).filter((f) => f.startsWith("audio"));
-    if (files.length === 0) throw new Error("Arquivo de áudio não encontrado");
-    const actualPath = path.join(tempDir, files[0]);
+    const actualPath = baixarAudio(url, tempDir);
 
     const fileSize = fs.statSync(actualPath).size / (1024 * 1024);
 
@@ -227,7 +237,10 @@ async function transcribeViaWhisper(url, apiKey) {
       source: "whisper_api",
     };
   } finally {
-    fs.rmSync(tempDir, { recursive: true, force: true });
+    // Falha ao limpar não pode mascarar o erro real da transcrição
+    try {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    } catch {}
   }
 }
 
@@ -241,7 +254,7 @@ async function transcribeLargeFile(client, audioPath, tempDir) {
   const chunkPattern = path.join(chunksDir, "chunk_%03d.mp3");
   execSync(
     `ffmpeg -i "${audioPath}" -f segment -segment_time 600 -c:a libmp3lame -q:a 9 "${chunkPattern}"`,
-    { stdio: ["pipe", "pipe", "pipe"], timeout: 120000 }
+    { stdio: ["pipe", "pipe", "pipe"], timeout: 1800000 }
   );
 
   const chunks = fs
@@ -338,7 +351,10 @@ function formatForLLM(title, url, result) {
 /**
  * Função principal: transcreve um vídeo do YouTube.
  */
-async function transcribe(url, { apiKey = null, languages = null } = {}) {
+async function transcribe(
+  url,
+  { apiKey = null, languages = null, motorAudio = null, ignorarLegendas = false } = {}
+) {
   const videoId = extractVideoId(url);
   const canonicalUrl = `https://www.youtube.com/watch?v=${videoId}`;
 
@@ -351,17 +367,29 @@ async function transcribe(url, { apiKey = null, languages = null } = {}) {
     console.log(`  Duração: ${min}m${sec}s`);
   }
 
-  // Etapa 1: Tenta legendas do YouTube (grátis)
-  console.log(`  Tentando legendas do YouTube via yt-dlp...`);
-  let result = transcribeViaYouTube(
-    canonicalUrl,
-    languages || ["pt", "pt-BR", "en", "es"]
-  );
+  // Etapa 1: legendas do YouTube (instantâneas e de graça).
+  // --refazer pula direto para o áudio: o modelo local costuma ser melhor
+  // que a legenda auto-gerada, que vem sem pontuação e com repetições.
+  let result = null;
+  if (ignorarLegendas) {
+    console.log(`  Ignorando legendas do YouTube (--refazer)`);
+  } else {
+    console.log(`  Tentando legendas do YouTube via yt-dlp...`);
+    result = transcribeViaYouTube(
+      canonicalUrl,
+      languages || ["pt", "pt-BR", "en", "es"]
+    );
+  }
 
   if (result) {
     console.log(`  OK - ${result.source} (${result.segments.length} segmentos)`);
+  } else if (motorAudio) {
+    // Etapa 2: motor local — baixa o áudio e transcreve na própria máquina
+    console.log(`  Baixando áudio para transcrever localmente...`);
+    result = await transcribeViaMotorLocal(canonicalUrl, motorAudio);
+    console.log(`  OK - ${result.source} (${result.segments.length} segmentos)`);
   } else {
-    // Etapa 2: Fallback Whisper API
+    // Etapa 3: API, só quando o usuário pede com --api
     const key = apiKey || process.env.OPENAI_API_KEY;
 
     if (!key) {

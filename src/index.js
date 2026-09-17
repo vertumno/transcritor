@@ -25,6 +25,11 @@ const fs = require("fs");
 const os = require("os");
 const { transcribe } = require("./youtube");
 const { transcribeLocal, isMediaFile } = require("./arquivo-local");
+const {
+  transcribeLocalWhisper,
+  motorLocalDisponivel,
+  MODELO_PADRAO,
+} = require("./local-whisper");
 const { loadVocabulary, applyFixesToResult } = require("./vocabulario");
 const {
   downloadVideo,
@@ -160,6 +165,30 @@ function formatLocal(title, sourcePath, result, caption = "") {
   return lines.join("\n");
 }
 
+/**
+ * Escolhe quem transcreve um arquivo de mídia.
+ *
+ * O padrão é o motor local (sem custo, sem enviar seu áudio para fora).
+ * A API só entra quando o usuário pede explicitamente com --api.
+ */
+function transcreverMidia(caminho, { args, vocabulary, apiKey }) {
+  if (args.api) {
+    return transcribeLocal(caminho, {
+      apiKey,
+      language: args.lang[0] || "pt",
+      wantSegments: args.srt,
+      vocabularyPrompt: vocabulary.prompt,
+    });
+  }
+
+  return transcribeLocalWhisper(caminho, {
+    modelo: args.modelo,
+    language: args.lang[0] || "pt",
+    device: args.device,
+    vocabularyPrompt: vocabulary.prompt,
+  });
+}
+
 function parseArgs(argv) {
   const args = {
     targets: [],
@@ -174,6 +203,10 @@ function parseArgs(argv) {
     download: false,
     cookies: null,
     browser: null,
+    api: false,
+    modelo: MODELO_PADRAO,
+    device: "auto",
+    refazer: false,
     help: false,
   };
 
@@ -196,6 +229,10 @@ function parseArgs(argv) {
     else if (arg === "--baixar" || arg === "--download") args.download = true;
     else if (arg === "--cookies") args.cookies = argv[++i];
     else if (arg === "--navegador" || arg === "--browser") args.browser = argv[++i];
+    else if (arg === "--api") args.api = true;
+    else if (arg === "--modelo" || arg === "--model") args.modelo = argv[++i];
+    else if (arg === "--device" || arg === "--dispositivo") args.device = argv[++i];
+    else if (arg === "--refazer") args.refazer = true;
     else if (!arg.startsWith("-")) args.targets.push(arg);
     i++;
   }
@@ -220,10 +257,18 @@ Opções:
   -l, --lang <idiomas...>  Idiomas (padrão: pt pt-BR en es; use auto p/ detectar)
       --srt                Gera também legenda .srt com marcação de tempo
       --forcar             Refaz transcrições que já existem
-      --api-key <chave>    OpenAI API key (ou OPENAI_API_KEY no .env)
       --stdout             Imprime no terminal em vez de salvar
       --concat             Junta todas as transcrições num arquivo único
   -h, --help               Mostra esta ajuda
+
+Motor de transcrição (padrão: local, custo zero):
+      --modelo <nome>      Modelo local (padrão: ${MODELO_PADRAO})
+                           Alternativas: large-v3, medium, small, tiny
+      --device <alvo>      auto | cuda | cpu (padrão: auto)
+      --refazer            No YouTube, ignora a legenda pronta e transcreve
+                           o áudio localmente (melhor que legenda auto-gerada)
+      --api                Usa a API da OpenAI em vez do motor local (pago)
+      --api-key <chave>    OpenAI API key (ou OPENAI_API_KEY no .env)
 
 Exemplos:
   node index.js https://instagram.com/reel/abc --baixar   # baixa o vídeo
@@ -234,9 +279,12 @@ Exemplos:
   node index.js --file links.txt --concat                 # lote de URLs
 
 Rotas (escolhidas sozinho):
-  URL do YouTube   -> legendas do YouTube (custo zero); cai na API se não houver
-  Outro site       -> baixa o áudio e transcreve pela API
-  Arquivo local    -> API da OpenAI (gpt-transcribe, com fallback whisper-1)
+  URL do YouTube   -> legendas do YouTube; sem legenda, transcreve local
+  Outro site       -> baixa o áudio e transcreve na sua máquina
+  Arquivo local    -> transcreve na sua máquina (faster-whisper)
+
+Tudo roda offline e de graça. Seu áudio não sai da máquina.
+Com --api o comportamento antigo volta (gpt-transcribe + whisper-1).
 
 Vocabulário:
   Edite vocabulario.txt para corrigir nomes e siglas em todas as rotas.
@@ -314,9 +362,27 @@ async function main() {
   let failed = 0;
   let skipped = 0;
 
+  // Sem --api o motor é local; avisa cedo se ele não estiver instalado,
+  // em vez de deixar cada item da fila falhar com o mesmo erro
+  if (!args.api && !args.download && !motorLocalDisponivel()) {
+    console.error(
+      "\nErro: motor local indisponível - não encontrei Python com faster-whisper.\n" +
+        "  Instale com: pip install faster-whisper\n" +
+        "  Ou use a API com --api (precisa de OPENAI_API_KEY).\n"
+    );
+    process.exit(1);
+  }
+
   console.log(`\n${"=".repeat(60)}`);
   console.log(`  Transcritor`);
   console.log(`  ${queue.length} item(ns) na fila`);
+  if (!args.download) {
+    console.log(
+      args.api
+        ? `  Motor: API da OpenAI (pago)`
+        : `  Motor: local - ${args.modelo} (${args.device}), custo zero`
+    );
+  }
   if (vocabulary.fixes.length > 0) {
     console.log(`  Vocabulário: ${vocabulary.fixes.length} correção(ões) ativa(s)`);
   }
@@ -374,12 +440,7 @@ async function main() {
         const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "baixar-"));
         try {
           const audioPath = downloadAudio(item.value, workDir, authOptions);
-          const raw = await transcribeLocal(audioPath, {
-            apiKey,
-            language: args.lang[0] || "pt",
-            wantSegments: args.srt,
-            vocabularyPrompt: vocabulary.prompt,
-          });
+          const raw = await transcreverMidia(audioPath, { args, vocabulary, apiKey });
           result = applyFixesToResult(raw, vocabulary.fixes);
           formatted = formatLocal(title, item.value, result, meta.caption);
           console.log(`  OK - ${result.source}`);
@@ -390,6 +451,11 @@ async function main() {
         const data = await transcribe(item.value, {
           apiKey,
           languages: args.lang,
+          // Sem --api, vídeo sem legenda cai no motor local em vez da API
+          motorAudio: args.api
+            ? null
+            : (audioPath) => transcreverMidia(audioPath, { args, vocabulary, apiKey }),
+          ignorarLegendas: args.refazer,
         });
         title = data.title;
         result = applyFixesToResult(data.result, vocabulary.fixes);
@@ -404,12 +470,7 @@ async function main() {
           continue;
         }
 
-        const raw = await transcribeLocal(item.value, {
-          apiKey,
-          language: args.lang[0] || "pt",
-          wantSegments: args.srt,
-          vocabularyPrompt: vocabulary.prompt,
-        });
+        const raw = await transcreverMidia(item.value, { args, vocabulary, apiKey });
         result = applyFixesToResult(raw, vocabulary.fixes);
 
         // Se o vídeo veio de um link, a legenda do post foi salva ao lado dele

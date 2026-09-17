@@ -11,3 +11,7 @@ versoes/
 node_modules/
 audio_temp/
 *.log
+
+# Python (motor local)
+__pycache__/
+*.pyc
