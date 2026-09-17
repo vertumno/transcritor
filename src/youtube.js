@@ -44,10 +44,28 @@ function getVideoInfo(url) {
 }
 
 /**
+ * Decodifica as entidades HTML que o YouTube devolve dentro das legendas.
+ * Sem isso, a marca de troca de falante ">>" chega ao texto final como "&gt;&gt;".
+ */
+function decodeEntities(text) {
+  return text
+    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(parseInt(code, 10)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, code) =>
+      String.fromCharCode(parseInt(code, 16))
+    )
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&"); // por último: evita decodificar "&amp;gt;" duas vezes
+}
+
+/**
  * Parseia o formato VTT para extrair segmentos com timestamps.
  */
 function parseVTT(vttContent) {
-  const segments = [];
+  const cues = [];
   const lines = vttContent.split("\n");
   let i = 0;
 
@@ -74,34 +92,61 @@ function parseVTT(vttContent) {
       const textLines = [];
       i++;
       while (i < lines.length && lines[i].trim() !== "") {
-        const text = lines[i]
-          .replace(/<[^>]*>/g, "") // Remove tags HTML
-          .trim();
+        const text = decodeEntities(
+          lines[i].replace(/<[^>]*>/g, "") // Remove tags HTML
+        ).trim();
         if (text) textLines.push(text);
         i++;
       }
 
-      const text = textLines.join(" ").trim();
-      if (text) {
-        segments.push({
-          start: startSec,
-          duration: endSec - startSec,
-          text,
-        });
+      if (textLines.length) {
+        cues.push({ start: startSec, duration: endSec - startSec, textLines });
       }
     }
     i++;
   }
 
-  // Remove duplicatas consecutivas (legendas auto-geradas repetem muito)
-  const deduped = [];
-  for (const seg of segments) {
-    if (deduped.length === 0 || deduped[deduped.length - 1].text !== seg.text) {
-      deduped.push(seg);
+  return dedupeRolling(cues);
+}
+
+/**
+ * Remove a repetição das legendas auto-geradas do YouTube.
+ *
+ * Elas são "rolling": cada bloco reexibe as linhas do bloco anterior e
+ * acrescenta uma nova, para o texto subir na tela. Comparar o bloco inteiro
+ * com o anterior não resolve nada — a concatenação nunca se repete — e o
+ * texto final sai com cada frase duplicada ou triplicada. Por isso a
+ * comparação é linha a linha, contra uma janela curta do que já saiu.
+ *
+ * A janela é curta de propósito: fala real repete ("sim, sim"), e descartar
+ * a distância toda transformaria repetição legítima em texto perdido.
+ */
+function dedupeRolling(cues, janela = 8) {
+  const recentes = [];
+  const segments = [];
+
+  for (const cue of cues) {
+    const novas = [];
+
+    for (const linha of cue.textLines) {
+      const chave = linha.toLowerCase().replace(/\s+/g, " ").trim();
+      if (!chave || recentes.includes(chave)) continue;
+
+      recentes.push(chave);
+      if (recentes.length > janela) recentes.shift();
+      novas.push(linha);
+    }
+
+    if (novas.length) {
+      segments.push({
+        start: cue.start,
+        duration: cue.duration,
+        text: novas.join(" "),
+      });
     }
   }
 
-  return deduped;
+  return segments;
 }
 
 /**

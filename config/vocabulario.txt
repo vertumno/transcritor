@@ -6,6 +6,8 @@
 #
 # Regra pratica: se a IA erra sempre o mesmo termo, crie uma CORRECAO.
 # As correcoes ignoram maiusculas/minusculas.
+# Elas tambem ignoram limite de palavra: se o lado certo contiver o lado
+# errado ("Claude Cod" dentro de "Claude Code"), a regra se come sozinha.
 
 # =====================================================================
 # DICAS DE GRAFIA
@@ -18,6 +20,7 @@ O CEO e o CTO falaram sobre GPU, CPU, LLM, API e SaaS.
 prompt, tokens, open source, landing page, machine learning
 Equipe DIJ, FEEES, evangelizacao espirita, Encontro Bimestral
 Synkra, AIOX
+Aliança Divergente, marca-passos, pré-queda, PPP, teoria da permissão, grupo USX
 
 # =====================================================================
 # CORRECOES AUTOMATICAS (garantidas)
@@ -26,7 +29,8 @@ Synkra, AIOX
 # --- IA / tecnologia ---
 # "Claude" soa como "cloud" em portugues - o erro mais comum
 Cloud Code => Claude Code
-Claude Cod => Claude Code
+# NAO recrie "Claude Cod => Claude Code": o alvo contem o padrao, entao
+# toda mencao correta virava "Claude Codee". A dica de grafia cobre o caso.
 Cloud AI => Claude
 Cloud Sonnet => Claude Sonnet
 Cloud Opus => Claude Opus
@@ -49,3 +53,14 @@ C. eu da => CEO da
 # --- espirita / FEEES ---
 equipe EJ => Equipe DIJ
 equipe IJ => Equipe DIJ
+
+# --- Alianca Divergente / mapa do impossivel ---
+# "marca passo" cobre tambem "marca passos": a regra roda primeiro e o "s"
+# final sobrevive. Por isso nao existe regra para o plural - e nao existe
+# regra de "marca-passo" para "marca-passos" porque o alvo contem o padrao,
+# e a substituicao (sem limite de palavra) entraria em loop.
+marca passo => marca-passo
+marcapasso => marca-passo
+perqueda => pré-queda
+praqueda => pré-queda
+frequeda => pré-queda

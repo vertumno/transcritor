@@ -234,7 +234,7 @@ Texto do minuto seguinte.
 | Cabeçalho de 3 linhas | contexto mínimo, sem desperdiçar tokens |
 | Timestamps a cada ~60s | dá para citar `[03:15]` sem poluir o texto |
 | Texto corrido entre marcas | densidade máxima |
-| Deduplicação de segmentos | legendas auto-geradas do YouTube repetem frases |
+| Deduplicação linha a linha | a legenda auto-gerada do YouTube é *rolling*: repete |
 
 O campo **Método** registra como aquela transcrição foi obtida
 (`youtube_manual_captions`, `youtube_auto_captions`,
@@ -255,6 +255,14 @@ O campo **Método** registra como aquela transcrição foi obtida
 > só então toma `HTTP 429` no terceiro — saindo com código de erro. O programa
 > confere os arquivos no disco **depois** do erro e aproveita a legenda que já
 > baixou, em vez de descartar tudo e transcrever à toa.
+
+> **Por que a deduplicação é linha a linha, e não por bloco?**
+> A legenda auto-gerada do YouTube é *rolling*: cada bloco reexibe as linhas
+> do bloco anterior e acrescenta uma nova, para o texto subir na tela.
+> Comparar o bloco inteiro com o anterior não descarta nada — a concatenação
+> nunca se repete — e o texto final sai com cada frase duplicada ou
+> triplicada. Medido aqui, numa live de 2h20: 326 mil caracteres viraram
+> 110 mil, sem perder uma frase sequer.
 
 ### Rota local (`src/local-whisper.js` + `src/transcricao_local.py`)
 
@@ -391,7 +399,7 @@ o que importa quando o material é de cliente, consulta ou reunião interna.
 | `OPENAI_API_KEY não configurada` | só afeta `--api`; sem a flag, não é necessária |
 | `HTTP 401` | a chave venceu ou foi revogada (só com `--api`) |
 | Legenda em idioma errado | `--lang en pt es` para mudar a prioridade |
-| Saída com texto duplicado | comum em legenda auto-gerada; use `--refazer` |
+| Saída com texto duplicado | não deveria mais ocorrer; se ocorrer, use `--refazer` |
 
 ### A GPU não está sendo usada
 
