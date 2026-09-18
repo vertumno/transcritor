@@ -3,15 +3,15 @@
 /**
  * Transcritor - CLI unificada
  *
- * Aceita as duas coisas e escolhe sozinho a rota mais barata:
+ * Aceita as duas coisas e organiza cada processamento como um trabalho:
  *   - URL do YouTube  -> legendas do próprio YouTube (custo zero)
- *   - arquivo local   -> API da OpenAI (vídeo do WhatsApp, aula gravada, áudio)
+ *   - arquivo local   -> motor local (vídeo do WhatsApp, aula gravada, áudio)
  *
  * Uso:
  *   node index.js <url>                  # vídeo do YouTube
  *   node index.js video.mp4              # arquivo local
- *   node index.js energia                # busca pelo trecho do nome em videos/
- *   node index.js                        # transcreve tudo que falta em videos/
+ *   node index.js energia                # busca pelo trecho do nome em _inbox/
+ *   node index.js                        # transcreve todos os arquivos da _inbox/
  *   node index.js --file links.txt       # lote de URLs
  */
 
@@ -29,8 +29,16 @@ const {
   transcribeLocalWhisper,
   motorLocalDisponivel,
   MODELO_PADRAO,
+  MODELO_RAPIDO,
 } = require("./local-whisper");
 const { loadVocabulary, applyFixesToResult } = require("./vocabulario");
+const {
+  formatarDataHora,
+  caminhoArquivoUnico,
+  estaDentro,
+  moverArquivo,
+  criarTrabalho,
+} = require("./fluxo-arquivos");
 const {
   downloadVideo,
   downloadAudio,
@@ -43,14 +51,9 @@ const {
 
 const BASE_DIR = ROOT_DIR;
 const VIDEOS_DIR = path.join(ROOT_DIR, "videos");
+const INBOX_DIR = path.join(ROOT_DIR, "_inbox");
+const PROCESSED_DIR = path.join(ROOT_DIR, "_processados");
 const CONFIG_DIR = path.join(ROOT_DIR, "config");
-
-function sanitizeFilename(name) {
-  return name
-    .replace(/[<>:"/\\|?*]/g, "")
-    .replace(/\s+/g, "_")
-    .slice(0, 100);
-}
 
 /**
  * Classifica cada alvo da linha de comando:
@@ -64,9 +67,8 @@ function classifyTarget(target) {
   return "local";
 }
 
-/** Lista os arquivos de mídia de videos/ e da raiz do projeto. */
-function listLocalMedia() {
-  const dirs = [VIDEOS_DIR, BASE_DIR];
+/** Lista mídias nas pastas informadas; videos/ continua como acervo legado. */
+function listLocalMedia(dirs = [INBOX_DIR]) {
   const found = [];
   for (const dir of dirs) {
     if (!fs.existsSync(dir)) continue;
@@ -86,7 +88,7 @@ function resolveLocalTarget(target) {
     return [path.resolve(target)];
   }
 
-  const candidates = listLocalMedia();
+  const candidates = listLocalMedia([INBOX_DIR, VIDEOS_DIR, BASE_DIR]);
   const needle = target.toLowerCase();
   const matches = candidates.filter((p) =>
     path.basename(p).toLowerCase().includes(needle)
@@ -165,6 +167,12 @@ function formatLocal(title, sourcePath, result, caption = "") {
   return lines.join("\n");
 }
 
+function normalizarIdiomaLocal(language) {
+  const value = (language || "pt").trim();
+  if (/^pt[-_]br$/i.test(value) || /^pt[-_]pt$/i.test(value)) return "pt";
+  return value;
+}
+
 /**
  * Escolhe quem transcreve um arquivo de mídia.
  *
@@ -183,8 +191,11 @@ function transcreverMidia(caminho, { args, vocabulary, apiKey }) {
 
   return transcribeLocalWhisper(caminho, {
     modelo: args.modelo,
-    language: args.lang[0] || "pt",
+    language: normalizarIdiomaLocal(args.lang[0]),
     device: args.device,
+    compute: args.compute,
+    perfil: args.perfil,
+    vad: args.vad,
     vocabularyPrompt: vocabulary.prompt,
   });
 }
@@ -193,7 +204,7 @@ function parseArgs(argv) {
   const args = {
     targets: [],
     file: null,
-    output: path.join(ROOT_DIR, "transcricoes"),
+    output: PROCESSED_DIR,
     lang: ["pt", "pt-BR", "en", "es"],
     apiKey: null,
     stdout: false,
@@ -204,8 +215,11 @@ function parseArgs(argv) {
     cookies: null,
     browser: null,
     api: false,
-    modelo: MODELO_PADRAO,
+    modelo: null,
     device: "auto",
+    compute: "auto",
+    perfil: "qualidade",
+    vad: "auto",
     refazer: false,
     help: false,
   };
@@ -232,9 +246,21 @@ function parseArgs(argv) {
     else if (arg === "--api") args.api = true;
     else if (arg === "--modelo" || arg === "--model") args.modelo = argv[++i];
     else if (arg === "--device" || arg === "--dispositivo") args.device = argv[++i];
+    else if (arg === "--compute") args.compute = argv[++i];
+    else if (arg === "--perfil") args.perfil = argv[++i];
+    else if (arg === "--vad") args.vad = argv[++i];
     else if (arg === "--refazer") args.refazer = true;
     else if (!arg.startsWith("-")) args.targets.push(arg);
     i++;
+  }
+  if (!args.modelo) {
+    args.modelo = args.perfil === "rapido" ? MODELO_RAPIDO : MODELO_PADRAO;
+  }
+  if (!['qualidade', 'rapido'].includes(args.perfil)) {
+    throw new Error("--perfil deve ser qualidade ou rapido");
+  }
+  if (!['auto', 'on', 'off'].includes(args.vad)) {
+    throw new Error("--vad deve ser auto, on ou off");
   }
   return args;
 }
@@ -245,26 +271,30 @@ Transcritor - baixa e transcreve vídeos
 
 Uso:
   node index.js <url|arquivo|trecho do nome> [...] [opções]
-  node index.js                       Transcreve tudo que falta em videos/
-  node index.js <url> --baixar        Só baixa o vídeo para videos/
+  node index.js                       Processa tudo que estiver em _inbox/
+  node index.js <url>                 Baixa o áudio e transcreve localmente
+  node index.js <url> --baixar        Só baixa o vídeo para _processados/
+  node index.js <arquivo>             Só transcreve o arquivo local
 
 Opções:
-      --baixar             Baixa o vídeo (YouTube, Instagram, TikTok...)
+      --baixar             Baixa o vídeo e organiza em _processados/
       --cookies <arquivo>  Cookies para sites que exigem login
       --navegador <nome>   Pega os cookies do navegador (firefox recomendado)
   -f, --file <arquivo>     Arquivo .txt com uma URL por linha
-  -o, --output <pasta>     Pasta de saída (padrão: output/)
+  -o, --output <pasta>     Raiz dos trabalhos (padrão: _processados/)
   -l, --lang <idiomas...>  Idiomas (padrão: pt pt-BR en es; use auto p/ detectar)
       --srt                Gera também legenda .srt com marcação de tempo
-      --forcar             Refaz transcrições que já existem
+      --forcar             Mantido por compatibilidade; cada execução cria uma versão
       --stdout             Imprime no terminal em vez de salvar
       --concat             Junta todas as transcrições num arquivo único
   -h, --help               Mostra esta ajuda
 
 Motor de transcrição (padrão: local, custo zero):
-      --modelo <nome>      Modelo local (padrão: ${MODELO_PADRAO})
-                           Alternativas: large-v3, medium, small, tiny
+      --perfil <nome>      qualidade | rapido (padrão: qualidade)
+      --modelo <nome>      Sobrescreve o modelo do perfil (padrão: ${MODELO_PADRAO})
+      --compute <tipo>     auto | float16 | int8_float16 | int8
       --device <alvo>      auto | cuda | cpu (padrão: auto)
+      --vad <modo>         auto | on | off (padrão: auto)
       --refazer            No YouTube, ignora a legenda pronta e transcreve
                            o áudio localmente (melhor que legenda auto-gerada)
       --api                Usa a API da OpenAI em vez do motor local (pago)
@@ -274,16 +304,24 @@ Exemplos:
   node index.js https://instagram.com/reel/abc --baixar   # baixa o vídeo
   node index.js https://youtube.com/watch?v=abc123        # grátis, via legendas
   node index.js https://instagram.com/reel/abc            # transcreve o reel
+  node index.js                                             # processa a _inbox
   node index.js "WhatsApp Video.mp4"                      # arquivo local
   node index.js energia --srt                             # busca nome + legenda
   node index.js --file links.txt --concat                 # lote de URLs
 
 Rotas (escolhidas sozinho):
-  URL do YouTube   -> legendas do YouTube; sem legenda, transcreve local
+  URL do YouTube   -> legenda humana; senão transcreve local
   Outro site       -> baixa o áudio e transcreve na sua máquina
   Arquivo local    -> transcreve na sua máquina (faster-whisper)
 
-Tudo roda offline e de graça. Seu áudio não sai da máquina.
+Modos:
+  Só baixar             URL + --baixar
+  Baixar e transcrever  URL sem --baixar
+  Só transcrever        arquivo local ou conteúdo da _inbox
+
+Cada item gera _processados/AAAA-MM-DD-HHmm - nome/ com mídia, texto e metadados.
+Arquivos da _inbox só são movidos depois da transcrição terminar com sucesso.
+Tudo roda localmente e de graça. Seu áudio não sai da máquina.
 Com --api o comportamento antigo volta (gpt-transcribe + whisper-1).
 
 Vocabulário:
@@ -293,6 +331,8 @@ Vocabulário:
 
 async function main() {
   const args = parseArgs(process.argv);
+
+  fs.mkdirSync(INBOX_DIR, { recursive: true });
 
   if (args.help) {
     showHelp();
@@ -321,13 +361,13 @@ async function main() {
   // Monta a fila: cada item sabe se é URL do YouTube ou arquivo local
   const queue = [];
   if (args.targets.length === 0) {
-    // Sem alvo: pega tudo que está em videos/ e ainda não foi transcrito
-    for (const file of listLocalMedia()) {
+    // Sem alvo: a _inbox é a fila. Ao concluir, o arquivo sai dela.
+    for (const file of listLocalMedia([INBOX_DIR])) {
       queue.push({ kind: "local", value: file });
     }
     if (queue.length === 0) {
       showHelp();
-      console.log(`Dica: coloque seus vídeos em ${VIDEOS_DIR}\n`);
+      console.log(`Dica: coloque seus vídeos ou áudios em ${INBOX_DIR}\n`);
       process.exit(1);
     }
   } else {
@@ -380,7 +420,7 @@ async function main() {
     console.log(
       args.api
         ? `  Motor: API da OpenAI (pago)`
-        : `  Motor: local - ${args.modelo} (${args.device}), custo zero`
+        : `  Motor: local - perfil ${args.perfil}, ${args.modelo} (${args.device}), custo zero`
     );
   }
   if (vocabulary.fixes.length > 0) {
@@ -393,91 +433,123 @@ async function main() {
     const label = item.kind === "local" ? path.basename(item.value) : item.value;
     console.log(`[${i + 1}/${queue.length}] ${label}`);
 
+    let job = null;
+
     try {
       let title;
       let formatted;
       let result;
+      let archivedMedia = null;
+      let caption = "";
+      let metadataSource = {};
 
-      // --baixar: guarda o vídeo em videos/ e segue para o próximo
+      // --baixar: cria um trabalho organizado apenas com vídeo e metadados.
       if (args.download) {
         if (item.kind === "local") {
           console.log(`  Já é um arquivo local, nada a baixar\n`);
           skipped++;
           continue;
         }
-        const { filePath: saved, alreadyExisted, captionPath } = downloadVideo(
+        const meta = getMetadata(item.value, authOptions);
+        job = criarTrabalho(args.output, meta.title);
+        const { filePath: saved, captionPath } = downloadVideo(
           item.value,
-          VIDEOS_DIR,
-          authOptions
+          job.stagingDir,
+          { ...authOptions, meta }
         );
-        console.log(
-          alreadyExisted ? `  Já estava baixado: ${saved}` : `  Salvo em: ${saved}`
-        );
-        if (captionPath) {
-          console.log(`  Legenda do post: ${captionPath}`);
-        } else {
-          console.log("  (esse post não tem legenda)");
+        const archivedVideo = job.archiveMedia(saved);
+        let archivedCaption = null;
+        if (captionPath && fs.existsSync(captionPath)) {
+          archivedCaption = moverArquivo(captionPath, job.file(".legenda.txt"));
         }
-        console.log(`  Para transcrever: node index.js "${path.basename(saved)}"\n`);
+        fs.writeFileSync(
+          job.file(".metadados.json"),
+          JSON.stringify(
+            {
+              schemaVersion: 1,
+              processedAt: new Date().toISOString(),
+              job: job.baseName,
+              title: meta.title,
+              mode: "download_only",
+              input: {
+                kind: item.kind,
+                url: item.value,
+                uploader: meta.uploader,
+                id: meta.id,
+              },
+              outputs: {
+                video: path.join(job.finalDir, path.basename(archivedVideo)),
+                caption: archivedCaption ? job.finalFile(".legenda.txt") : null,
+              },
+            },
+            null,
+            2
+          ) + "\n",
+          "utf-8"
+        );
+        const completedDir = job.complete();
+        console.log(`  Download concluído em: ${completedDir}`);
         success++;
         continue;
       }
 
       if (item.kind === "link") {
-        // Site sem legenda pronta (Instagram, TikTok...): baixa o áudio
+        // Site sem legenda pronta (Instagram, TikTok...): preserva o melhor áudio.
         const meta = getMetadata(item.value, authOptions);
         title = meta.title;
         console.log(`  Título: ${title}`);
         if (meta.caption) console.log("  Legenda do post capturada");
-
-        const outPath = path.join(args.output, sanitizeFilename(title) + ".md");
-        if (fs.existsSync(outPath) && !args.force && !args.stdout) {
-          console.log(`  Já transcrito, pulando - use --forcar para refazer\n`);
-          skipped++;
-          continue;
-        }
-
-        const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "baixar-"));
+        job = args.stdout ? null : criarTrabalho(args.output, title);
+        const workDir = job
+          ? job.stagingDir
+          : fs.mkdtempSync(path.join(os.tmpdir(), "baixar-"));
         try {
           const audioPath = downloadAudio(item.value, workDir, authOptions);
           const raw = await transcreverMidia(audioPath, { args, vocabulary, apiKey });
           result = applyFixesToResult(raw, vocabulary.fixes);
-          formatted = formatLocal(title, item.value, result, meta.caption);
+          caption = meta.caption;
+          formatted = formatLocal(title, item.value, result, caption);
+          if (job) archivedMedia = job.archiveMedia(audioPath);
           console.log(`  OK - ${result.source}`);
         } finally {
-          fs.rmSync(workDir, { recursive: true, force: true });
+          if (!job) fs.rmSync(workDir, { recursive: true, force: true });
         }
+        metadataSource = { url: item.value, uploader: meta.uploader, id: meta.id };
       } else if (item.kind === "youtube") {
+        const meta = getMetadata(item.value, authOptions);
+        title = meta.title;
+        job = args.stdout ? null : criarTrabalho(args.output, title);
         const data = await transcribe(item.value, {
           apiKey,
           languages: args.lang,
           // Sem --api, vídeo sem legenda cai no motor local em vez da API
           motorAudio: args.api
             ? null
-            : (audioPath) => transcreverMidia(audioPath, { args, vocabulary, apiKey }),
+              : (audioPath) => transcreverMidia(audioPath, { args, vocabulary, apiKey }),
           ignorarLegendas: args.refazer,
+          audioDir: job ? job.stagingDir : null,
         });
         title = data.title;
         result = applyFixesToResult(data.result, vocabulary.fixes);
         formatted = require("./youtube").formatForLLM(title, data.url, result);
+        if (job && data.mediaPath) archivedMedia = job.archiveMedia(data.mediaPath);
+        metadataSource = { url: data.url, videoId: data.videoId };
       } else {
         title = path.basename(item.value, path.extname(item.value));
-
-        const outPath = path.join(args.output, sanitizeFilename(title) + ".md");
-        if (fs.existsSync(outPath) && !args.force && !args.stdout) {
-          console.log(`  Já transcrito, pulando - use --forcar para refazer\n`);
-          skipped++;
-          continue;
-        }
-
+        job = args.stdout ? null : criarTrabalho(args.output, title);
         const raw = await transcreverMidia(item.value, { args, vocabulary, apiKey });
         result = applyFixesToResult(raw, vocabulary.fixes);
 
         // Se o vídeo veio de um link, a legenda do post foi salva ao lado dele
-        const caption = readCaption(item.value);
+        caption = readCaption(item.value);
         if (caption) console.log("  Legenda do post encontrada");
 
-        formatted = formatLocal(title, item.value, result, caption);
+        const sourceForDocument =
+          job && estaDentro(item.value, INBOX_DIR)
+            ? job.finalFile(path.extname(item.value))
+            : item.value;
+        formatted = formatLocal(title, sourceForDocument, result, caption);
+        metadataSource = { originalPath: path.resolve(item.value) };
         console.log(`  OK - ${result.source}`);
       }
 
@@ -485,22 +557,82 @@ async function main() {
         console.log("\n" + formatted);
         if (i < queue.length - 1) console.log("\n---\n");
       } else {
-        const filename = sanitizeFilename(title) + ".md";
-        const filepath = path.join(args.output, filename);
+        const filepath = job.file(".md");
         fs.writeFileSync(filepath, formatted, "utf-8");
-        console.log(`  Salvo em: ${filepath}`);
 
         if (args.srt && result.segments && result.segments.length > 0) {
-          const srtPath = path.join(args.output, sanitizeFilename(title) + ".srt");
+          const srtPath = job.file(".srt");
           fs.writeFileSync(srtPath, buildSRT(result.segments), "utf-8");
-          console.log(`  Salvo em: ${srtPath}`);
         }
+
+        if (caption) {
+          fs.writeFileSync(job.file(".legenda.txt"), caption + "\n", "utf-8");
+        }
+
+        // A mídia da _inbox só sai da fila depois que a transcrição e seus
+        // derivados foram gravados com sucesso.
+        if (item.kind === "local" && estaDentro(item.value, INBOX_DIR)) {
+          archivedMedia = job.archiveMedia(item.value);
+          const captionPath = item.value.replace(/\.[^.]+$/, "") + ".legenda.txt";
+          if (fs.existsSync(captionPath)) {
+            moverArquivo(captionPath, job.file(".legenda-original.txt"));
+          }
+        }
+
+        const finalMedia = archivedMedia
+          ? path.join(job.finalDir, path.basename(archivedMedia))
+          : null;
+        const metadata = {
+          schemaVersion: 1,
+          processedAt: new Date().toISOString(),
+          job: job.baseName,
+          title,
+          input: { kind: item.kind, value: item.value, ...metadataSource },
+          archivedMedia: finalMedia,
+          transcription: {
+            source: result.source,
+            model: result.model || null,
+            device: result.device || null,
+            compute: result.compute || null,
+            profile: result.profile || args.perfil,
+            language: result.language || normalizarIdiomaLocal(args.lang[0]),
+            duration: result.duration || null,
+            durationAfterVad: result.duration_after_vad || null,
+            vadCoverage: result.vad_coverage ?? null,
+            diagnostics: result.diagnostics || null,
+          },
+          vocabulary: {
+            fixes: vocabulary.fixes.length,
+            promptEnabled: Boolean(vocabulary.prompt),
+          },
+          outputs: {
+            markdown: job.finalFile(".md"),
+            srt: args.srt ? job.finalFile(".srt") : null,
+            caption: caption ? job.finalFile(".legenda.txt") : null,
+          },
+        };
+        fs.writeFileSync(
+          job.file(".metadados.json"),
+          JSON.stringify(metadata, null, 2) + "\n",
+          "utf-8"
+        );
+
+        const completedDir = job.complete();
+        console.log(`  Trabalho concluído em: ${completedDir}`);
       }
 
       all.push(formatted);
       success++;
     } catch (err) {
       console.error(`  ERRO: ${err.message}`);
+      if (job) {
+        try {
+          const failureDir = job.fail(err);
+          if (failureDir) console.error(`  Diagnóstico preservado em: ${failureDir}`);
+        } catch (archiveError) {
+          console.error(`  Não foi possível preservar a falha: ${archiveError.message}`);
+        }
+      }
       failed++;
     }
 
@@ -508,7 +640,10 @@ async function main() {
   }
 
   if (args.concat && !args.stdout && all.length > 1) {
-    const concatPath = path.join(args.output, "_todas_transcricoes.md");
+    const concatPath = caminhoArquivoUnico(
+      args.output,
+      `${formatarDataHora()} - todas transcricoes.md`
+    );
     fs.writeFileSync(concatPath, all.join("\n\n---\n\n"), "utf-8");
     console.log(`Concatenado em: ${concatPath}`);
   }

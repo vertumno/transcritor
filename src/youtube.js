@@ -152,7 +152,11 @@ function dedupeRolling(cues, janela = 8) {
 /**
  * Tenta extrair legendas do YouTube via yt-dlp (zero custo).
  */
-function transcribeViaYouTube(url, languages = ["pt", "pt-BR", "en", "es"]) {
+function transcribeViaYouTube(
+  url,
+  languages = ["pt", "pt-BR", "en", "es"],
+  tipo = "manual"
+) {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "yt-subs-"));
   const outTemplate = path.join(tempDir, "subs");
 
@@ -187,11 +191,9 @@ function transcribeViaYouTube(url, languages = ["pt", "pt-BR", "en", "es"]) {
       return { text: segments.map((s) => s.text).join(" "), segments, source };
     };
 
-    // Legendas manuais primeiro (revisadas por humanos), depois auto-geradas
-    return (
-      tentar("--write-sub", "youtube_manual_captions") ||
-      tentar("--write-auto-sub", "youtube_auto_captions")
-    );
+    return tipo === "auto"
+      ? tentar("--write-auto-sub", "youtube_auto_captions")
+      : tentar("--write-sub", "youtube_manual_captions");
   } finally {
     try {
       fs.rmSync(tempDir, { recursive: true, force: true });
@@ -220,9 +222,10 @@ function findSubFile(dir) {
 function baixarAudio(url, tempDir) {
   const audioPath = path.join(tempDir, "audio");
 
-  // Qualidade baixa é suficiente para fala e reduz muito o tempo de download
+  // Preserva o melhor áudio original. Recodificar para MP3 antes do ASR causa
+  // perda cumulativa e contradiz o perfil de máxima qualidade.
   execSync(
-    `yt-dlp -x --audio-format mp3 --audio-quality 9 --no-warnings --no-progress -N 8 --encoding utf-8 -o "${audioPath}.%(ext)s" "${url}"`,
+    `yt-dlp -f "ba/b" --no-warnings --no-progress -N 8 --encoding utf-8 -o "${audioPath}.%(ext)s" "${url}"`,
     { timeout: 3600000, stdio: ["pipe", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 }
   );
 
@@ -234,14 +237,19 @@ function baixarAudio(url, tempDir) {
 /**
  * Baixa o áudio e transcreve com o motor local (sem API, sem custo).
  */
-async function transcribeViaMotorLocal(url, motorAudio) {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "yt-audio-"));
+async function transcribeViaMotorLocal(url, motorAudio, outputDir = null) {
+  const tempDir = outputDir || fs.mkdtempSync(path.join(os.tmpdir(), "yt-audio-"));
+  const temporario = !outputDir;
   try {
-    return await motorAudio(baixarAudio(url, tempDir));
+    const audioPath = baixarAudio(url, tempDir);
+    const result = await motorAudio(audioPath);
+    return { result, mediaPath: temporario ? null : audioPath };
   } finally {
-    try {
-      fs.rmSync(tempDir, { recursive: true, force: true });
-    } catch {}
+    if (temporario) {
+      try {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      } catch {}
+    }
   }
 }
 
@@ -398,7 +406,13 @@ function formatForLLM(title, url, result) {
  */
 async function transcribe(
   url,
-  { apiKey = null, languages = null, motorAudio = null, ignorarLegendas = false } = {}
+  {
+    apiKey = null,
+    languages = null,
+    motorAudio = null,
+    ignorarLegendas = false,
+    audioDir = null,
+  } = {}
 ) {
   const videoId = extractVideoId(url);
   const canonicalUrl = `https://www.youtube.com/watch?v=${videoId}`;
@@ -416,13 +430,15 @@ async function transcribe(
   // --refazer pula direto para o áudio: o modelo local costuma ser melhor
   // que a legenda auto-gerada, que vem sem pontuação e com repetições.
   let result = null;
+  let mediaPath = null;
   if (ignorarLegendas) {
     console.log(`  Ignorando legendas do YouTube (--refazer)`);
   } else {
-    console.log(`  Tentando legendas do YouTube via yt-dlp...`);
+    console.log(`  Tentando legenda humana do YouTube via yt-dlp...`);
     result = transcribeViaYouTube(
       canonicalUrl,
-      languages || ["pt", "pt-BR", "en", "es"]
+      languages || ["pt", "pt-BR", "en", "es"],
+      "manual"
     );
   }
 
@@ -431,32 +447,49 @@ async function transcribe(
   } else if (motorAudio) {
     // Etapa 2: motor local — baixa o áudio e transcreve na própria máquina
     console.log(`  Baixando áudio para transcrever localmente...`);
-    result = await transcribeViaMotorLocal(canonicalUrl, motorAudio);
+    const local = await transcribeViaMotorLocal(canonicalUrl, motorAudio, audioDir);
+    result = local.result;
+    mediaPath = local.mediaPath;
     console.log(`  OK - ${result.source} (${result.segments.length} segmentos)`);
   } else {
-    // Etapa 3: API, só quando o usuário pede com --api
-    const key = apiKey || process.env.OPENAI_API_KEY;
-
-    if (!key) {
-      throw new Error(
-        "Legendas indisponíveis e OPENAI_API_KEY não configurada. " +
-          "Configure no .env ou passe --api-key."
+    // Sem motor local (modo legado/API), a legenda automática ainda é uma
+    // alternativa gratuita antes de enviar áudio para fora.
+    if (!ignorarLegendas) {
+      console.log(`  Tentando legenda automática do YouTube...`);
+      result = transcribeViaYouTube(
+        canonicalUrl,
+        languages || ["pt", "pt-BR", "en", "es"],
+        "auto"
       );
     }
 
-    console.log(`  Legendas indisponíveis. Baixando áudio para Whisper API...`);
-    result = await transcribeViaWhisper(canonicalUrl, key);
+    if (result) {
+      console.log(`  OK - ${result.source} (${result.segments.length} segmentos)`);
+    } else {
+      // Etapa 3: API, só quando o usuário pede com --api
+      const key = apiKey || process.env.OPENAI_API_KEY;
 
-    if (!result) {
-      throw new Error(`Falha ao transcrever: ${canonicalUrl}`);
+      if (!key) {
+        throw new Error(
+          "Legendas indisponíveis e OPENAI_API_KEY não configurada. " +
+            "Configure no .env ou passe --api-key."
+        );
+      }
+
+      console.log(`  Legendas indisponíveis. Baixando áudio para Whisper API...`);
+      result = await transcribeViaWhisper(canonicalUrl, key);
+
+      if (!result) {
+        throw new Error(`Falha ao transcrever: ${canonicalUrl}`);
+      }
+
+      console.log(`  OK - Whisper API (${result.segments.length} segmentos)`);
     }
-
-    console.log(`  OK - Whisper API (${result.segments.length} segmentos)`);
   }
 
   const formatted = formatForLLM(info.title, canonicalUrl, result);
 
-  return { title: info.title, url: canonicalUrl, videoId, result, formatted };
+  return { title: info.title, url: canonicalUrl, videoId, result, formatted, mediaPath };
 }
 
 module.exports = { transcribe, extractVideoId, formatForLLM };

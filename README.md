@@ -25,39 +25,67 @@ Sem API, sem chave, sem custo por minuto. O áudio não sai do seu computador.
 
 ## Uso rápido
 
-### Baixar um vídeo
+### Processar a pasta de entrada
 
 ```bash
-node src/index.js https://www.instagram.com/reel/abc123/ --baixar
-node src/index.js https://www.youtube.com/watch?v=abc123 --baixar
+# 1. Coloque vídeos e áudios em _inbox/
+# 2. Execute sem argumentos
+node src/index.js
 ```
 
-O arquivo vai para `videos/`. Funciona com YouTube, Instagram, TikTok, Facebook
-e os [outros sites que o yt-dlp suporta](https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md).
-Se o vídeo já estiver lá, ele avisa em vez de baixar de novo.
+Cada arquivo só sai da `_inbox/` depois de ser transcrito com sucesso. Ele é
+movido para uma pasta própria em `_processados/`, junto com o Markdown, SRT
+opcional e metadados.
 
 ### Transcrever
 
 ```bash
-# YouTube: usa as legendas do próprio site — instantâneo
+# YouTube: usa legenda humana; sem ela, transcreve o melhor áudio localmente
 node src/index.js https://www.youtube.com/watch?v=abc123
 
 # Instagram, TikTok e afins: baixa o áudio e transcreve na sua máquina
 node src/index.js https://www.instagram.com/reel/abc123/
 
-# Arquivo local: chame por um pedaço do nome
-node src/index.js whatsapp
-node src/index.js energia --srt
-
-# Tudo que está em videos/ e ainda não foi transcrito
-node src/index.js
+# Arquivo local fora da inbox também funciona (não é movido)
+node src/index.js "C:\caminho\aula.mp4" --srt
 
 # Lote de links
 node src/index.js --file links.txt --concat
 ```
 
+### Os três modos
+
+```bash
+# 1. Somente baixar o vídeo do YouTube ou Instagram em _processados/
+node src/index.js URL --baixar
+
+# 2. Baixar a melhor faixa de áudio e transcrever localmente
+node src/index.js URL
+
+# 3. Somente transcrever um arquivo que já está no computador
+node src/index.js arquivo.mp4
+# ou coloque os arquivos em _inbox/ e execute sem argumentos
+node src/index.js
+```
+
+No segundo modo, a mídia mantida junto do trabalho é a melhor faixa de áudio,
+não uma segunda cópia do vídeo completo. No YouTube, uma legenda humana é usada
+diretamente quando estiver disponível; nesse caso não é necessário baixar a
+mídia. O modo `--baixar` sempre baixa o vídeo e não produz transcrição.
+
 No Windows há também o atalho `transcrever.bat` — no PowerShell use `.\transcrever`,
-no cmd basta `transcrever`. As saídas vão para `transcricoes/`.
+no cmd basta `transcrever`.
+
+Uma saída típica fica assim:
+
+```text
+_processados/
+└── 2026-09-18-1711 - Nome da aula/
+    ├── 2026-09-18-1711 - Nome da aula.mp4
+    ├── 2026-09-18-1711 - Nome da aula.md
+    ├── 2026-09-18-1711 - Nome da aula.srt
+    └── 2026-09-18-1711 - Nome da aula.metadados.json
+```
 
 ---
 
@@ -67,8 +95,8 @@ O programa detecta o tipo de entrada e decide sozinho. **Tudo custa zero:**
 
 | Você passa | Rota | Velocidade |
 |---|---|---|
-| URL do YouTube | legendas do próprio YouTube via `yt-dlp` | instantâneo |
-| URL do YouTube sem legendas | baixa o áudio e transcreve na sua máquina | ~10x tempo real¹ |
+| URL do YouTube com legenda humana | legenda revisada do YouTube | instantâneo |
+| URL do YouTube sem legenda humana | preserva o melhor áudio e transcreve localmente | depende do perfil |
 | URL de outro site (Instagram, TikTok…) | baixa o áudio e transcreve na sua máquina | ~10x tempo real¹ |
 | Arquivo local (`.mp4`, `.mp3`…) | transcreve na sua máquina | ~10x tempo real¹ |
 | Qualquer URL + `--baixar` | só baixa o vídeo, não transcreve | — |
@@ -76,20 +104,17 @@ O programa detecta o tipo de entrada e decide sozinho. **Tudo custa zero:**
 ¹ Com GPU NVIDIA. Sem GPU, aproximadamente 1x — uma hora de vídeo leva uma
 hora. Veja [O motor local](#o-motor-local).
 
-> **Se o vídeo está no YouTube, passe a URL** — não baixe o arquivo antes.
-> A legenda pronta sai na hora; pelo arquivo você espera a transcrição rodar.
+> Legenda automática do YouTube não é mais preferida sobre o motor local. A
+> prioridade é legenda humana e depois Whisper local.
 
-Quando a legenda do YouTube for ruim (auto-gerada costuma vir sem pontuação e
-com repetições), force o motor local com `--refazer`.
-
-### Baixar e transcrever
-
-São dois passos, de propósito — assim você fica com o arquivo *e* o texto:
+### Somente baixar um vídeo
 
 ```bash
 node src/index.js https://www.instagram.com/reel/abc123/ --baixar
-node src/index.js                # transcreve o que acabou de cair em videos/
 ```
+
+Esse modo cria um trabalho timestampado em `_processados/`, com o vídeo,
+metadados e a legenda/descrição do post quando disponível, sem transcrever.
 
 ---
 
@@ -97,14 +122,14 @@ node src/index.js                # transcreve o que acabou de cair em videos/
 
 | Opção | O que faz |
 |---|---|
-| `--baixar` | baixa o vídeo para `videos/` em vez de transcrever |
+| `--baixar` | baixa o vídeo para um trabalho em `_processados/`, sem transcrever |
 | `--cookies <arquivo>` | cookies para sites que exigem login (padrão: `cookies.txt` da pasta) |
 | `--navegador <nome>` | lê os cookies do navegador — use `firefox` |
 | `-f, --file <arquivo>` | arquivo `.txt` com uma URL por linha |
-| `-o, --output <pasta>` | pasta de saída (padrão: `transcricoes/`) |
+| `-o, --output <pasta>` | raiz dos trabalhos (padrão: `_processados/`) |
 | `-l, --lang <idiomas...>` | idiomas (padrão: `pt pt-BR en es`; use `auto` para detectar) |
 | `--srt` | gera também legenda `.srt` com marcação de tempo |
-| `--forcar` | refaz transcrições que já existem |
+| `--forcar` | compatibilidade; cada execução já cria uma nova versão timestampada |
 | `--stdout` | imprime no terminal em vez de salvar |
 | `--concat` | junta todas as transcrições num arquivo único |
 | `-h, --help` | mostra a ajuda |
@@ -113,8 +138,11 @@ node src/index.js                # transcreve o que acabou de cair em videos/
 
 | Opção | O que faz |
 |---|---|
-| `--modelo <nome>` | modelo local (padrão: `large-v3-turbo`); veja a tabela abaixo |
+| `--perfil <nome>` | `qualidade` (padrão) ou `rapido` |
+| `--modelo <nome>` | sobrescreve o modelo escolhido pelo perfil |
+| `--compute <tipo>` | `auto`, `float16`, `int8_float16` ou `int8` |
 | `--device <alvo>` | `auto`, `cuda` ou `cpu` (padrão: `auto`) |
+| `--vad <modo>` | `auto`, `on` ou `off`; use `off` para canto/fala muito baixa |
 | `--refazer` | no YouTube, ignora a legenda pronta e transcreve o áudio |
 | `--api` | usa a API da OpenAI em vez do motor local (**pago**) |
 | `--api-key <chave>` | chave da OpenAI (ou `OPENAI_API_KEY` no `.env`) |
@@ -129,18 +157,17 @@ node src/index.js url --stdout > saida.md      # redireciona para arquivo
 ## O motor local
 
 Quem transcreve é o [faster-whisper](https://github.com/SYSTRAN/faster-whisper)
-— o Whisper da OpenAI reimplementado em CTranslate2, rodando na sua máquina.
-O mesmo modelo que a API usa, só que local.
+— o Whisper executado com CTranslate2, inteiramente na sua máquina.
 
 ### Modelos
 
-O padrão é **`large-v3-turbo`**: qualidade de `large-v3` e cerca de 3x mais
-rápido. Trocar só faz sentido em máquina fraca — e sai caro em qualidade.
+O padrão é o perfil **`qualidade`**, com `large-v3`. Para trabalhos menos
+críticos, `--perfil rapido` usa `large-v3-turbo`.
 
 | Modelo | Disco | Qualidade |
 |---|---|---|
-| `large-v3-turbo` **(padrão)** | ~1,6 GB | igual à API |
-| `large-v3` | ~3,1 GB | igual, porém ~3x mais lento |
+| `large-v3` **(padrão)** | ~3,1 GB | maior precisão disponível neste pipeline |
+| `large-v3-turbo` | ~1,6 GB | muito mais rápido, com pequena perda potencial |
 | `small` | ~0,5 GB | erra nomes e palavras² |
 | `tiny` | ~0,1 GB | só para teste rápido |
 
@@ -166,12 +193,22 @@ na CPU automaticamente.
 
 ### Áudio cantado
 
-O detector de voz (VAD) acelera a transcrição pulando trechos sem fala, mas
-classifica **canto como silêncio** e devolveria texto vazio. Quando isso
-acontece, o programa refaz sem o VAD sozinho e a música sai transcrita.
+O detector de voz usa parâmetros conservadores para reter fala baixa e curta.
+No perfil de qualidade, uma segunda leitura sensível identifica possíveis
+lacunas e registra seus tempos em `.metadados.json`.
 
-Isso é uma vantagem sobre a API: o `gpt-transcribe` simplesmente devolve vazio
-para áudio cantado.
+O perfil de qualidade faz uma única segunda passagem, sem VAD e sem o contexto
+do trecho anterior, somente nos intervalos marcados como baixa confiança ou
+possível lacuna. A nova versão só substitui a original quando melhora a
+confiança ou recupera fala que estava ausente.
+
+O `.metadados.json` registra a cobertura do VAD, os intervalos suspeitos, cada
+tentativa, sua pontuação, a decisão e quantas substituições foram aceitas. Para
+canto ou fala muito baixa, ainda é possível desativar o VAD na execução inteira:
+
+```bash
+node src/index.js arquivo.mp4 --vad off
+```
 
 ### Ainda dá para usar a API
 
@@ -237,8 +274,9 @@ Texto do minuto seguinte.
 | Deduplicação linha a linha | a legenda auto-gerada do YouTube é *rolling*: repete |
 
 O campo **Método** registra como aquela transcrição foi obtida
-(`youtube_manual_captions`, `youtube_auto_captions`,
-`local (large-v3-turbo/cuda)`, `arquivo_local (gpt-transcribe)` com `--api`).
+(`youtube_manual_captions`, `local (large-v3/cuda)` ou o modo legado com
+`--api`). O arquivo `.metadados.json` também registra modelo, dispositivo,
+quantização, cobertura do VAD, intervalos suspeitos e todos os caminhos.
 
 ---
 
@@ -248,8 +286,8 @@ O campo **Método** registra como aquela transcrição foi obtida
 
 1. `yt-dlp` extrai título e duração sem baixar o vídeo
 2. Tenta legendas **manuais** (revisadas por humanos)
-3. Tenta legendas **auto-geradas**
-4. Se não houver nenhuma: baixa só o áudio e passa para o motor local
+3. Se não houver: preserva a melhor faixa de áudio e passa para o motor local
+4. Legenda automática só é usada no modo legado sem motor local
 
 > Pedindo vários idiomas de uma vez, o `yt-dlp` às vezes baixa `pt` e `en` e
 > só então toma `HTTP 429` no terceiro — saindo com código de erro. O programa
@@ -268,8 +306,9 @@ O campo **Método** registra como aquela transcrição foi obtida
 
 1. O Node acha o Python e injeta as DLLs de CUDA no `PATH` do subprocesso
 2. O Python carrega o modelo e transcreve, reportando progresso pelo `stderr`
-3. Sem fala detectada? Refaz sem VAD (áudio cantado)
-4. O resultado volta como JSON e recebe as correções do vocabulário
+3. Registra confiança, palavras, cobertura e possíveis lacunas do VAD
+4. Não refaz trechos automaticamente; a decisão fica visível nos metadados
+5. O resultado recebe as correções do vocabulário
 
 Não há extração nem fatiamento de áudio: o faster-whisper lê o vídeo direto
 (via PyAV) e processa em janela deslizante, sem limite de tamanho. O `ffmpeg`
@@ -304,8 +343,12 @@ transcritor/
 ├── transcrever.bat       # ATALHO — é isso que você digita
 ├── README.md             # este arquivo
 │
-├── videos/               # ENTRADA: largue os vídeos aqui
-├── transcricoes/         # SAÍDA: os .md e .srt saem aqui
+├── _inbox/               # FILA: coloque aqui áudio e vídeo ainda não processados
+├── _processados/         # um diretório timestampado para cada trabalho concluído
+│   ├── .processando/     # área temporária; não conta como concluído
+│   └── _falhas/          # diagnóstico e downloads parciais quando algo falha
+├── quality/              # corpus humano e avaliação WER/CER
+├── videos/               # acervo legado; continua pesquisável pelo nome
 ├── config/               # O QUE VOCÊ EDITA
 │   ├── vocabulario.txt   #   termos e correções de grafia
 │   └── links.txt         #   lista de URLs para processar em lote
@@ -318,6 +361,8 @@ transcritor/
 │   ├── youtube.js        #   rota YouTube: legendas + fallback local
 │   ├── local-whisper.js  #   MOTOR LOCAL: acha o Python, cuida do CUDA
 │   ├── transcricao_local.py # MOTOR LOCAL: faster-whisper de fato
+│   ├── fluxo-arquivos.js #   nomenclatura, staging e movimentação segura
+│   ├── metricas-qualidade.js # WER, CER e termos críticos
 │   ├── arquivo-local.js  #   rota --api: ffmpeg + OpenAI
 │   ├── download.js       #   download por link (yt-dlp)
 │   ├── vocabulario.js    #   vocabulário compartilhado pelas rotas
@@ -327,8 +372,21 @@ transcritor/
 └── package.json
 ```
 
-**A regra é simples:** vídeo entra por `videos/`, texto sai em `transcricoes/`,
-e o que você ajusta está em `config/`.
+**A regra é simples:** arquivo entra por `_inbox/`; quando termina, mídia,
+transcrição e metadados ficam juntos em `_processados/AAAA-MM-DD-HHmm - nome/`.
+
+### Avaliação de qualidade
+
+O diretório `quality/` contém um manifesto vazio e instruções para montar um
+corpus humano. Depois de cadastrar referências e hipóteses:
+
+```bash
+npm run quality:evaluate
+```
+
+O relatório calcula WER, CER e recuperação de nomes/termos críticos. As
+referências precisam ser revisadas por uma pessoa; o programa não fabrica um
+"gabarito" usando outro modelo.
 
 ---
 
@@ -395,11 +453,11 @@ o que importa quando o material é de cliente, consulta ou reunião interna.
 | Está lento demais | conferir se a GPU foi usada: a linha `Motor:` mostra `cuda` ou `cpu` |
 | `nada encontrado para "x"` | o programa lista os arquivos disponíveis — confira o nome |
 | `yt-dlp saiu com código N` | link privado, apagado ou que exige login — veja cookies abaixo |
-| `nenhuma fala reconhecida` | o arquivo pode não ter fala; tente `--lang auto` |
+| `nenhuma fala reconhecida` | tente explicitamente `--vad off` ou `--lang auto` |
 | `OPENAI_API_KEY não configurada` | só afeta `--api`; sem a flag, não é necessária |
 | `HTTP 401` | a chave venceu ou foi revogada (só com `--api`) |
 | Legenda em idioma errado | `--lang en pt es` para mudar a prioridade |
-| Saída com texto duplicado | não deveria mais ocorrer; se ocorrer, use `--refazer` |
+| Metadados apontam intervalos suspeitos | confira os tempos e decida se vale rodar novamente com `--vad off` |
 
 ### A GPU não está sendo usada
 
@@ -498,8 +556,8 @@ com isso internamente, mas vale lembrar ao mexer nos arquivos na mão.
 |---|---|
 | Vídeos privados ou restritos por região | VPN ou cookies de autenticação no `yt-dlp` |
 | Rate limit do YouTube | aguardar alguns minutos |
-| Legenda auto-gerada de baixa qualidade | `--refazer` transcreve o áudio localmente |
+| Legenda automática de baixa qualidade | o fluxo padrão já prefere o motor local |
 | Sem GPU, é lento (~1x tempo real) | deixar rodando, ou `--api` quando houver pressa |
 | O modelo carrega a cada arquivo (~7 s) | irrelevante em vídeo longo; pesa em lote de clipes curtos |
-| VAD não detecta canto | tratado: refaz sozinho sem VAD |
+| VAD pode não detectar canto/fala baixa | verifique os metadados e rode explicitamente com `--vad off` |
 | Sem identificação de quem fala | o `faster-whisper` não faz diarização |

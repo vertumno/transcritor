@@ -6,6 +6,9 @@ cookies.txt
 videos/
 transcricoes/
 versoes/
+_inbox/*
+!_inbox/.gitkeep
+_processados/
 
 # Dependências e temporários
 node_modules/

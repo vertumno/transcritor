@@ -10,7 +10,9 @@
     "start": "node src/index.js",
     "transcribe": "node src/index.js",
     "cookies": "node src/filtrar-cookies.js",
-    "local": "node src/index.js"
+    "local": "node src/index.js",
+    "test": "node --test",
+    "quality:evaluate": "node src/avaliar-qualidade.js"
   },
   "keywords": [
     "youtube",

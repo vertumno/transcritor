@@ -15,9 +15,9 @@ const path = require("path");
 
 const SCRIPT = path.join(__dirname, "transcricao_local.py");
 
-// Multilíngue, qualidade de large-v3 e ~3x mais rápido. Medido nesta máquina
-// (RTX 2050): 9,9x tempo real na GPU, 0,9x na CPU — texto idêntico ao da API.
-const MODELO_PADRAO = "large-v3-turbo";
+// O objetivo padrão é qualidade. O Turbo continua disponível no perfil rápido.
+const MODELO_PADRAO = "large-v3";
+const MODELO_RAPIDO = "large-v3-turbo";
 
 let pythonCache = null;
 let dllCache = null;
@@ -98,6 +98,8 @@ function transcribeLocalWhisper(filePath, options = {}) {
     language = "pt",
     device = "auto",
     compute = "auto",
+    perfil = "qualidade",
+    vad = "auto",
     vocabularyPrompt = "",
   } = options;
 
@@ -132,6 +134,8 @@ function transcribeLocalWhisper(filePath, options = {}) {
     "--idioma", language,
     "--device", device,
     "--compute", compute,
+    "--perfil", perfil,
+    "--vad", vad,
   ];
   if (vocabularyPrompt) args.push("--prompt", vocabularyPrompt);
 
@@ -171,7 +175,7 @@ function transcribeLocalWhisper(filePath, options = {}) {
         const resultado = JSON.parse(fs.readFileSync(jsonPath, "utf-8"));
         if (!resultado.text || !resultado.text.trim()) {
           throw new Error(
-            "nenhuma fala reconhecida - o arquivo tem áudio falado? tente --lang auto"
+            "nenhuma fala reconhecida - tente --vad off (canto/fala baixa) ou --lang auto"
           );
         }
         resolve(resultado);
@@ -195,4 +199,5 @@ module.exports = {
   transcribeLocalWhisper,
   motorLocalDisponivel,
   MODELO_PADRAO,
+  MODELO_RAPIDO,
 };

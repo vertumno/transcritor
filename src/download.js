@@ -2,9 +2,9 @@
  * Download de vídeos por link, via yt-dlp.
  *
  * Serve a dois propósitos:
- *   1. `--baixar` — guardar o vídeo em videos/ para você assistir/editar
+ *   1. `--baixar` — guardar o vídeo no trabalho organizado para assistir/editar
  *   2. transcrever links que não são do YouTube (Instagram, TikTok...),
- *      onde não existe legenda pronta: baixa só o áudio e manda para a API
+ *      onde não existe legenda pronta: preserva o melhor áudio para o motor local
  */
 
 const { spawnSync, execFileSync } = require("child_process");
@@ -206,7 +206,7 @@ function runDownload(args, destDir, id, url) {
  */
 function downloadVideo(url, destDir, options = {}) {
   const auth = cookieArgs(options);
-  const meta = getMetadata(url, options);
+  const meta = options.meta || getMetadata(url, options);
   const existing = findExisting(destDir, meta.id);
 
   if (existing) {
@@ -239,7 +239,11 @@ function downloadVideo(url, destDir, options = {}) {
 }
 
 /**
- * Baixa só o áudio, para transcrever links sem legenda disponível.
+ * Baixa a melhor faixa de áudio sem recodificar.
+ *
+ * Converter para MP3 aqui pioraria um áudio que normalmente já é comprimido.
+ * O fallback /b aceita um contêiner com vídeo quando o site não oferece uma
+ * faixa exclusivamente de áudio; o motor local consegue decodificá-lo.
  */
 function downloadAudio(url, destDir, options = {}) {
   const auth = cookieArgs(options);
@@ -249,9 +253,7 @@ function downloadAudio(url, destDir, options = {}) {
   const { filePath } = runDownload(
     [
       ...auth,
-      "-x",
-      "--audio-format", "mp3",
-      "--audio-quality", "9",
+      "-f", "ba/b",
       "--no-playlist",
       "--no-warnings",
       "--encoding", "utf-8",
