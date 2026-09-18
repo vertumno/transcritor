@@ -35,11 +35,18 @@ function acharPython() {
 
   for (const [comando, prefixo] of candidatos) {
     try {
-      execFileSync(comando, [...prefixo, "-c", "import faster_whisper"], {
-        stdio: ["pipe", "pipe", "pipe"],
-        timeout: 60000,
-      });
-      pythonCache = { comando, prefixo };
+      const resolved = execFileSync(
+        comando,
+        [...prefixo, "-c", "import faster_whisper,sys;print(sys.executable)"],
+        {
+          stdio: ["pipe", "pipe", "pipe"],
+          timeout: 60000,
+          encoding: "utf-8",
+        }
+      ).trim();
+      pythonCache = resolved
+        ? { comando: resolved.split(/\r?\n/).at(-1), prefixo: [] }
+        : { comando, prefixo };
       return pythonCache;
     } catch {
       // Interpretador ausente ou sem a biblioteca: tenta o próximo
@@ -121,7 +128,9 @@ function transcribeLocalWhisper(filePath, options = {}) {
   const ambiente = { ...process.env };
   const cuda = diretoriosCuda(python);
   if (cuda.length > 0) {
-    ambiente.PATH = cuda.join(path.delimiter) + path.delimiter + (ambiente.PATH || "");
+    const pathKey = Object.keys(ambiente).find((key) => key.toUpperCase() === "PATH") || "PATH";
+    ambiente[pathKey] =
+      cuda.join(path.delimiter) + path.delimiter + (ambiente[pathKey] || "");
   }
   ambiente.PYTHONIOENCODING = "utf-8";
 

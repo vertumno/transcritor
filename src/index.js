@@ -23,6 +23,7 @@ const ROOT_DIR = path.join(__dirname, "..");
 require("dotenv").config({ path: path.join(ROOT_DIR, ".env") });
 const fs = require("fs");
 const os = require("os");
+const { spawnSync } = require("child_process");
 const { transcribe } = require("./youtube");
 const { transcribeLocal, isMediaFile } = require("./arquivo-local");
 const {
@@ -38,15 +39,21 @@ const {
   estaDentro,
   moverArquivo,
   criarTrabalho,
+  criarLote,
 } = require("./fluxo-arquivos");
 const {
   downloadVideo,
   downloadAudio,
+  downloadStoryMedia,
   getTitle,
   getMetadata,
+  saveCaption,
   readCaption,
   isUrl,
   isYouTubeUrl,
+  isInstagramProfileUrl,
+  normalizarPerfilStories,
+  listInstagramStories,
 } = require("./download");
 
 const BASE_DIR = ROOT_DIR;
@@ -63,6 +70,7 @@ const CONFIG_DIR = path.join(ROOT_DIR, "config");
  */
 function classifyTarget(target) {
   if (isYouTubeUrl(target)) return "youtube";
+  if (isInstagramProfileUrl(target)) return "stories";
   if (isUrl(target)) return "link";
   return "local";
 }
@@ -173,6 +181,51 @@ function normalizarIdiomaLocal(language) {
   return value;
 }
 
+function temFaixaAudio(filePath) {
+  const probe = spawnSync(
+    "ffprobe",
+    [
+      "-v", "error",
+      "-select_streams", "a",
+      "-show_entries", "stream=index",
+      "-of", "csv=p=0",
+      filePath,
+    ],
+    { encoding: "utf-8", timeout: 30000 }
+  );
+  if (probe.error) return true;
+  return probe.status === 0 && Boolean(probe.stdout.trim());
+}
+
+function resultadoStorySemFala(motivo, args) {
+  return {
+    text: motivo,
+    segments: [],
+    source: "local (Story sem fala reconhecível)",
+    model: args.modelo,
+    profile: args.perfil,
+    language: normalizarIdiomaLocal(args.lang[0]),
+    diagnostics: {
+      status: "no_speech",
+      reason: motivo,
+      automatic_retries: 0,
+      accepted_retries: 0,
+    },
+  };
+}
+
+function resultadoStoryImagem(args) {
+  return {
+    text: "Story composto por imagem; não há áudio para transcrever.",
+    segments: [],
+    source: "não aplicável (Story de imagem)",
+    model: null,
+    profile: args.perfil,
+    language: null,
+    diagnostics: { status: "image", automatic_retries: 0, accepted_retries: 0 },
+  };
+}
+
 /**
  * Escolhe quem transcreve um arquivo de mídia.
  *
@@ -221,6 +274,7 @@ function parseArgs(argv) {
     perfil: "qualidade",
     vad: "auto",
     refazer: false,
+    stories: false,
     help: false,
   };
 
@@ -250,6 +304,7 @@ function parseArgs(argv) {
     else if (arg === "--perfil") args.perfil = argv[++i];
     else if (arg === "--vad") args.vad = argv[++i];
     else if (arg === "--refazer") args.refazer = true;
+    else if (arg === "--stories") args.stories = true;
     else if (!arg.startsWith("-")) args.targets.push(arg);
     i++;
   }
@@ -275,11 +330,13 @@ Uso:
   node index.js <url>                 Baixa o áudio e transcreve localmente
   node index.js <url> --baixar        Só baixa o vídeo para _processados/
   node index.js <arquivo>             Só transcreve o arquivo local
+  node index.js --stories <perfil>    Baixa todos; transcreve Stories em vídeo
 
 Opções:
       --baixar             Baixa o vídeo e organiza em _processados/
       --cookies <arquivo>  Cookies para sites que exigem login
       --navegador <nome>   Pega os cookies do navegador (firefox recomendado)
+      --stories            Baixa imagens e vídeos ativos de um perfil
   -f, --file <arquivo>     Arquivo .txt com uma URL por linha
   -o, --output <pasta>     Raiz dos trabalhos (padrão: _processados/)
   -l, --lang <idiomas...>  Idiomas (padrão: pt pt-BR en es; use auto p/ detectar)
@@ -304,6 +361,7 @@ Exemplos:
   node index.js https://instagram.com/reel/abc --baixar   # baixa o vídeo
   node index.js https://youtube.com/watch?v=abc123        # grátis, via legendas
   node index.js https://instagram.com/reel/abc            # transcreve o reel
+  node index.js --stories usuario --navegador firefox     # Stories ativos
   node index.js                                             # processa a _inbox
   node index.js "WhatsApp Video.mp4"                      # arquivo local
   node index.js energia --srt                             # busca nome + legenda
@@ -318,6 +376,7 @@ Modos:
   Só baixar             URL + --baixar
   Baixar e transcrever  URL sem --baixar
   Só transcrever        arquivo local ou conteúdo da _inbox
+  Stories ativos        --stories usuario (requer cookies do Instagram)
 
 Cada item gera _processados/AAAA-MM-DD-HHmm - nome/ com mídia, texto e metadados.
 Arquivos da _inbox só são movidos depois da transcrição terminar com sucesso.
@@ -358,9 +417,19 @@ async function main() {
     }
   }
 
+  const authOptions = {
+    cookiesFile: args.cookies,
+    browser: args.browser,
+    baseDir: BASE_DIR,
+  };
+
   // Monta a fila: cada item sabe se é URL do YouTube ou arquivo local
   const queue = [];
   if (args.targets.length === 0) {
+    if (args.stories) {
+      console.error("Erro: informe o perfil depois de --stories (ex.: --stories usuario).\n");
+      process.exit(1);
+    }
     // Sem alvo: a _inbox é a fila. Ao concluir, o arquivo sai dela.
     for (const file of listLocalMedia([INBOX_DIR])) {
       queue.push({ kind: "local", value: file });
@@ -372,7 +441,29 @@ async function main() {
     }
   } else {
     for (const target of args.targets) {
-      const kind = classifyTarget(target);
+      const kind = args.stories && normalizarPerfilStories(target)
+        ? "stories"
+        : classifyTarget(target);
+      if (kind === "stories") {
+        try {
+          const profile = listInstagramStories(target, authOptions);
+          if (profile.stories.length === 0) {
+            console.log(`Nenhum Story ativo encontrado para @${profile.username}.`);
+          }
+          for (const story of profile.stories) {
+            queue.push({
+              kind: "story",
+              value: story.url,
+              downloadUrl: story.mediaUrl,
+              meta: story.meta,
+            });
+          }
+        } catch (err) {
+          console.error(`Erro: ${err.message}`);
+          process.exit(1);
+        }
+        continue;
+      }
       if (kind === "local") {
         try {
           for (const file of resolveLocalTarget(target)) {
@@ -388,15 +479,15 @@ async function main() {
     }
   }
 
+  if (queue.length === 0) {
+    console.log("Nada para processar.");
+    process.exit(0);
+  }
+
   if (!args.stdout) fs.mkdirSync(args.output, { recursive: true });
 
   const vocabulary = loadVocabulary(CONFIG_DIR);
   const apiKey = args.apiKey || process.env.OPENAI_API_KEY;
-  const authOptions = {
-    cookiesFile: args.cookies,
-    browser: args.browser,
-    baseDir: BASE_DIR,
-  };
   const all = [];
   let success = 0;
   let failed = 0;
@@ -428,12 +519,35 @@ async function main() {
   }
   console.log(`${"=".repeat(60)}\n`);
 
+  const storyBatches = new Map();
+  if (!args.stdout) {
+    for (const item of queue.filter((entry) => entry.kind === "story")) {
+      const profile = item.meta.profile;
+      if (!storyBatches.has(profile)) {
+        storyBatches.set(profile, {
+          profile,
+          batch: criarLote(args.output, `Story ${profile} - Todos`),
+          success: 0,
+          failed: 0,
+          items: [],
+        });
+      }
+    }
+  }
+
   for (let i = 0; i < queue.length; i++) {
     const item = queue[i];
-    const label = item.kind === "local" ? path.basename(item.value) : item.value;
+    const label =
+      item.kind === "local"
+        ? path.basename(item.value)
+        : item.meta?.title || item.value;
     console.log(`[${i + 1}/${queue.length}] ${label}`);
 
-    let job = null;
+    const storyBatch =
+      item.kind === "story" && !args.stdout
+        ? storyBatches.get(item.meta.profile)
+        : null;
+    let job = storyBatch ? storyBatch.batch.item(item.meta.title) : null;
 
     try {
       let title;
@@ -450,13 +564,25 @@ async function main() {
           skipped++;
           continue;
         }
-        const meta = getMetadata(item.value, authOptions);
-        job = criarTrabalho(args.output, meta.title);
-        const { filePath: saved, captionPath } = downloadVideo(
-          item.value,
-          job.stagingDir,
-          { ...authOptions, meta }
-        );
+        const meta = item.meta || getMetadata(item.value, authOptions);
+        job = job || criarTrabalho(args.output, meta.title);
+        let saved;
+        let captionPath;
+        if (item.kind === "story") {
+          saved = downloadStoryMedia(item.downloadUrl, job.stagingDir, {
+            ...authOptions,
+            outputBase: meta.id,
+            extension: meta.extension,
+            mediaType: meta.mediaType,
+          });
+          captionPath = saveCaption(saved, meta);
+        } else {
+          ({ filePath: saved, captionPath } = downloadVideo(
+            item.value,
+            job.stagingDir,
+            { ...authOptions, meta }
+          ));
+        }
         const archivedVideo = job.archiveMedia(saved);
         let archivedCaption = null;
         if (captionPath && fs.existsSync(captionPath)) {
@@ -478,7 +604,7 @@ async function main() {
                 id: meta.id,
               },
               outputs: {
-                video: path.join(job.finalDir, path.basename(archivedVideo)),
+                media: path.join(job.finalDir, path.basename(archivedVideo)),
                 caption: archivedCaption ? job.finalFile(".legenda.txt") : null,
               },
             },
@@ -488,24 +614,68 @@ async function main() {
           "utf-8"
         );
         const completedDir = job.complete();
-        console.log(`  Download concluído em: ${completedDir}`);
+        console.log(
+          storyBatch
+            ? `  Story adicionado ao lote: ${completedDir}`
+            : `  Download concluído em: ${completedDir}`
+        );
+        if (storyBatch) {
+          storyBatch.success++;
+          storyBatch.items.push({
+            title: meta.title,
+            status: "ok",
+            metadata: job.finalFile(".metadados.json"),
+          });
+        }
         success++;
         continue;
       }
 
-      if (item.kind === "link") {
+      if (item.kind === "link" || item.kind === "story") {
         // Site sem legenda pronta (Instagram, TikTok...): preserva o melhor áudio.
-        const meta = getMetadata(item.value, authOptions);
+        const meta = item.meta || getMetadata(item.value, authOptions);
         title = meta.title;
         console.log(`  Título: ${title}`);
         if (meta.caption) console.log("  Legenda do post capturada");
-        job = args.stdout ? null : criarTrabalho(args.output, title);
+        job = args.stdout ? null : job || criarTrabalho(args.output, title);
         const workDir = job
           ? job.stagingDir
           : fs.mkdtempSync(path.join(os.tmpdir(), "baixar-"));
         try {
-          const audioPath = downloadAudio(item.value, workDir, authOptions);
-          const raw = await transcreverMidia(audioPath, { args, vocabulary, apiKey });
+          const audioPath =
+            item.kind === "story"
+              ? downloadStoryMedia(item.downloadUrl, workDir, {
+                  ...authOptions,
+                  outputBase: meta.id,
+                  extension: meta.extension,
+                  mediaType: meta.mediaType,
+                })
+              : downloadAudio(item.value, workDir, authOptions);
+          let raw;
+          if (item.kind === "story" && meta.mediaType === "image") {
+            raw = resultadoStoryImagem(args);
+          } else if (item.kind === "story" && !temFaixaAudio(audioPath)) {
+            raw = resultadoStorySemFala(
+              "Story baixado, mas a mídia não possui faixa de áudio.",
+              args
+            );
+          } else {
+            try {
+              raw = await transcreverMidia(audioPath, { args, vocabulary, apiKey });
+            } catch (err) {
+              if (
+                item.kind === "story" &&
+                /nenhuma fala reconhecida/i.test(err.message)
+              ) {
+                raw = resultadoStorySemFala(
+                  "Story baixado, mas nenhuma fala foi reconhecida.",
+                  args
+                );
+              } else {
+                throw err;
+              }
+            }
+          }
           result = applyFixesToResult(raw, vocabulary.fixes);
           caption = meta.caption;
           formatted = formatLocal(title, item.value, result, caption);
@@ -514,7 +684,21 @@ async function main() {
         } finally {
           if (!job) fs.rmSync(workDir, { recursive: true, force: true });
         }
-        metadataSource = { url: item.value, uploader: meta.uploader, id: meta.id };
+        metadataSource = {
+          url: item.value,
+          uploader: meta.uploader,
+          id: meta.id,
+          ...(item.kind === "story"
+            ? {
+                profile: meta.profile,
+                storyIndex: meta.storyIndex,
+                storyTimestamp: meta.timestamp,
+                storyExpiresAt: meta.expiresAt,
+                mediaType: meta.mediaType,
+                dimensions: { width: meta.width, height: meta.height },
+              }
+            : {}),
+        };
       } else if (item.kind === "youtube") {
         const meta = getMetadata(item.value, authOptions);
         title = meta.title;
@@ -618,10 +802,22 @@ async function main() {
         );
 
         const completedDir = job.complete();
-        console.log(`  Trabalho concluído em: ${completedDir}`);
+        console.log(
+          storyBatch
+            ? `  Story adicionado ao lote: ${completedDir}`
+            : `  Trabalho concluído em: ${completedDir}`
+        );
       }
 
       all.push(formatted);
+      if (storyBatch) {
+        storyBatch.success++;
+        storyBatch.items.push({
+          title,
+          status: "ok",
+          metadata: job.finalFile(".metadados.json"),
+        });
+      }
       success++;
     } catch (err) {
       console.error(`  ERRO: ${err.message}`);
@@ -633,10 +829,45 @@ async function main() {
           console.error(`  Não foi possível preservar a falha: ${archiveError.message}`);
         }
       }
+      if (storyBatch) {
+        storyBatch.failed++;
+        storyBatch.items.push({
+          title: item.meta.title,
+          status: "error",
+          error: err.message,
+          diagnostic: job ? job.finalFile(".erro.txt") : null,
+        });
+      }
       failed++;
     }
 
     console.log();
+  }
+
+  for (const record of storyBatches.values()) {
+    fs.writeFileSync(
+      record.batch.file(".metadados.json"),
+      JSON.stringify(
+        {
+          schemaVersion: 1,
+          processedAt: new Date().toISOString(),
+          mode: args.download ? "stories_download_only" : "stories_transcription",
+          profile: record.profile,
+          job: record.batch.baseName,
+          totals: {
+            stories: record.success + record.failed,
+            success: record.success,
+            failed: record.failed,
+          },
+          items: record.items,
+        },
+        null,
+        2
+      ) + "\n",
+      "utf-8"
+    );
+    const batchDir = record.batch.complete();
+    console.log(`Lote de Stories concluído em: ${batchDir}`);
   }
 
   if (args.concat && !args.stdout && all.length > 1) {

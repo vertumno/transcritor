@@ -73,6 +73,42 @@ não uma segunda cópia do vídeo completo. No YouTube, uma legenda humana é us
 diretamente quando estiver disponível; nesse caso não é necessário baixar a
 mídia. O modo `--baixar` sempre baixa o vídeo e não produz transcrição.
 
+### Stories ativos do Instagram
+
+Passe o perfil, o nome de usuário ou diretamente a URL de Stories:
+
+```bash
+# Baixa todos; transcreve os Stories que tiverem vídeo com fala
+node src/index.js --stories usuario --navegador firefox
+
+# A URL simples do perfil também é reconhecida automaticamente
+node src/index.js https://www.instagram.com/usuario/ --navegador firefox
+
+# Apenas baixa todos os Stories, inclusive imagens, sem transcrever
+node src/index.js --stories usuario --baixar --navegador firefox
+```
+
+Todos os Stories encontrados na mesma execução ficam reunidos em uma única
+pasta mãe por perfil:
+
+```text
+_processados/
+└── 2026-09-18-1828 - Story usuario - Todos/
+    ├── 2026-09-18-1828 - Story usuario - 01.mp4
+    ├── 2026-09-18-1828 - Story usuario - 01.md
+    ├── 2026-09-18-1828 - Story usuario - 01.metadados.json
+    ├── 2026-09-18-1828 - Story usuario - 02.jpg
+    ├── 2026-09-18-1828 - Story usuario - 02.md
+    ├── 2026-09-18-1828 - Story usuario - 02.metadados.json
+    └── 2026-09-18-1828 - Story usuario - Todos.metadados.json
+```
+
+Stories exigem uma sessão autenticada do Instagram: use `--navegador firefox`
+ou um `cookies.txt`. Imagens são baixadas no tamanho de maior resolução
+disponível e registradas como `image`; vídeos seguem para a transcrição local.
+Quando um vídeo não tiver áudio ou fala reconhecível, a mídia ainda é arquivada
+normalmente e o motivo fica registrado no Markdown e nos metadados.
+
 No Windows há também o atalho `transcrever.bat` — no PowerShell use `.\transcrever`,
 no cmd basta `transcrever`.
 
@@ -98,6 +134,7 @@ O programa detecta o tipo de entrada e decide sozinho. **Tudo custa zero:**
 | URL do YouTube com legenda humana | legenda revisada do YouTube | instantâneo |
 | URL do YouTube sem legenda humana | preserva o melhor áudio e transcreve localmente | depende do perfil |
 | URL de outro site (Instagram, TikTok…) | baixa o áudio e transcreve na sua máquina | ~10x tempo real¹ |
+| Perfil do Instagram ou `--stories usuario` | todos os Stories ativos: imagens e vídeos | depende da quantidade |
 | Arquivo local (`.mp4`, `.mp3`…) | transcreve na sua máquina | ~10x tempo real¹ |
 | Qualquer URL + `--baixar` | só baixa o vídeo, não transcreve | — |
 
@@ -125,6 +162,7 @@ metadados e a legenda/descrição do post quando disponível, sem transcrever.
 | `--baixar` | baixa o vídeo para um trabalho em `_processados/`, sem transcrever |
 | `--cookies <arquivo>` | cookies para sites que exigem login (padrão: `cookies.txt` da pasta) |
 | `--navegador <nome>` | lê os cookies do navegador — use `firefox` |
+| `--stories` | trata o alvo como perfil do Instagram e processa Stories ativos |
 | `-f, --file <arquivo>` | arquivo `.txt` com uma URL por linha |
 | `-o, --output <pasta>` | raiz dos trabalhos (padrão: `_processados/`) |
 | `-l, --lang <idiomas...>` | idiomas (padrão: `pt pt-BR en es`; use `auto` para detectar) |
@@ -453,11 +491,12 @@ o que importa quando o material é de cliente, consulta ou reunião interna.
 | Está lento demais | conferir se a GPU foi usada: a linha `Motor:` mostra `cuda` ou `cpu` |
 | `nada encontrado para "x"` | o programa lista os arquivos disponíveis — confira o nome |
 | `yt-dlp saiu com código N` | link privado, apagado ou que exige login — veja cookies abaixo |
+| Stories não aparecem | renove os cookies e confirme que a conta autenticada consegue vê-los |
 | `nenhuma fala reconhecida` | tente explicitamente `--vad off` ou `--lang auto` |
 | `OPENAI_API_KEY não configurada` | só afeta `--api`; sem a flag, não é necessária |
 | `HTTP 401` | a chave venceu ou foi revogada (só com `--api`) |
 | Legenda em idioma errado | `--lang en pt es` para mudar a prioridade |
-| Metadados apontam intervalos suspeitos | confira os tempos e decida se vale rodar novamente com `--vad off` |
+| Metadados apontam intervalos suspeitos | confira quais segundas passagens foram aceitas; use `--vad off` se ainda faltar fala |
 
 ### A GPU não está sendo usada
 

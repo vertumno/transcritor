@@ -10,6 +10,7 @@ const {
   caminhoArquivoUnico,
   estaDentro,
   criarTrabalho,
+  criarLote,
 } = require("../src/fluxo-arquivos");
 
 test("formata o prefixo no padrão solicitado", () => {
@@ -82,6 +83,35 @@ test("falha preserva os artefatos e um diagnóstico fora dos concluídos", () =>
     assert.equal(fs.existsSync(job.finalDir), false);
     assert.equal(fs.existsSync(path.join(failureDir, "_ERRO.txt")), true);
     assert.match(fs.readFileSync(path.join(failureDir, "_ERRO.txt"), "utf-8"), /falha simulada/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("lote reúne todos os Stories em uma única pasta mãe", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "transcritor-test-"));
+  try {
+    const lote = criarLote(
+      root,
+      "Story pessoa - Todos",
+      new Date(2026, 8, 18, 18, 28)
+    );
+    const primeiro = lote.item("Story pessoa - 01");
+    const segundo = lote.item("Story pessoa - 02");
+    fs.writeFileSync(primeiro.file("md"), "vídeo", "utf-8");
+    fs.writeFileSync(segundo.file("jpg"), "imagem", "utf-8");
+
+    assert.equal(fs.existsSync(lote.finalDir), false);
+    primeiro.complete();
+    assert.equal(fs.existsSync(lote.finalDir), false);
+    lote.complete();
+
+    assert.equal(
+      path.basename(lote.finalDir),
+      "2026-09-18-1828 - Story pessoa - Todos"
+    );
+    assert.equal(fs.existsSync(primeiro.finalFile("md")), true);
+    assert.equal(fs.existsSync(segundo.finalFile("jpg")), true);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

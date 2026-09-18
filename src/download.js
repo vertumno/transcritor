@@ -1,5 +1,5 @@
 /**
- * Download de vídeos por link, via yt-dlp.
+ * Download de vídeos, áudios e imagens por link, via yt-dlp.
  *
  * Serve a dois propósitos:
  *   1. `--baixar` — guardar o vídeo no trabalho organizado para assistir/editar
@@ -21,10 +21,136 @@ function isYouTubeUrl(target) {
   return /(?:youtube\.com|youtu\.be)/i.test(target);
 }
 
+const ROTAS_INSTAGRAM = new Set([
+  "accounts", "about", "developer", "direct", "directory", "explore",
+  "p", "reel", "reels", "stories", "tv",
+]);
+
+function normalizarPerfilStories(target) {
+  const valor = String(target || "").trim();
+  const storyUrl = valor.match(
+    /^https?:\/\/(?:www\.)?instagram\.com\/stories\/([a-z0-9._]+)(?:\/\d+)?\/?(?:[?#].*)?$/i
+  );
+  if (storyUrl) {
+    const username = storyUrl[1];
+    return { username, url: `https://www.instagram.com/stories/${username}/` };
+  }
+
+  const profileUrl = valor.match(
+    /^https?:\/\/(?:www\.)?instagram\.com\/([a-z0-9._]+)\/?(?:[?#].*)?$/i
+  );
+  const username = profileUrl
+    ? profileUrl[1]
+    : valor.replace(/^@/, "").match(/^[a-z0-9._]+$/i)?.[0];
+  if (!username || ROTAS_INSTAGRAM.has(username.toLowerCase())) return null;
+  return { username, url: `https://www.instagram.com/stories/${username}/` };
+}
+
+function isInstagramProfileUrl(target) {
+  return isUrl(target) && Boolean(normalizarPerfilStories(target));
+}
+
+function mapearStories(data, username) {
+  const entries = Array.isArray(data?.stories) ? data.stories : [];
+  return entries
+    .filter((entry) => entry && entry.id && entry.mediaUrl)
+    .map((entry, index) => ({
+      url: `https://www.instagram.com/stories/${username}/`,
+      mediaUrl: entry.mediaUrl,
+      meta: {
+        title: `Story ${username} - ${String(index + 1).padStart(2, "0")}`,
+        id: String(entry.id),
+        pk: entry.pk || null,
+        caption: String(entry.caption || "").trim(),
+        uploader: data.uploader || username,
+        duration: entry.duration ?? null,
+        timestamp: entry.timestamp ?? null,
+        expiresAt: entry.expiresAt ?? null,
+        profile: username,
+        storyIndex: index + 1,
+        mediaType: entry.mediaType,
+        extension: entry.extension,
+        width: entry.width ?? null,
+        height: entry.height ?? null,
+        hasAudio: entry.hasAudio ?? null,
+      },
+    }));
+}
+
+function executarListadorStories(args) {
+  const candidatos = [];
+  if (process.env.PYTHON) candidatos.push([process.env.PYTHON, []]);
+  candidatos.push(["python", []], ["python3", []], ["py", ["-3"]]);
+  let indisponivel = null;
+
+  for (const [comando, prefixo] of candidatos) {
+    try {
+      return execFileSync(
+        comando,
+        [...prefixo, path.join(__dirname, "listar_stories.py"), ...args],
+        {
+          timeout: 180000,
+          stdio: ["pipe", "pipe", "pipe"],
+          maxBuffer: 64 * 1024 * 1024,
+          env: { ...process.env, PYTHONIOENCODING: "utf-8" },
+        }
+      );
+    } catch (err) {
+      if (err.code === "ENOENT") {
+        indisponivel = err;
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw indisponivel || new Error("Python não encontrado");
+}
+
+function listInstagramStories(target, options = {}) {
+  const profile = normalizarPerfilStories(target);
+  if (!profile) {
+    throw new Error(
+      `perfil do Instagram inválido: ${target}. Use @usuario ou https://instagram.com/usuario/`
+    );
+  }
+
+  const auth = cookieArgs(options);
+  if (auth.length === 0) {
+    throw new Error(
+      "Stories do Instagram exigem login. Use --navegador firefox ou forneça cookies.txt."
+    );
+  }
+
+  try {
+    const out = executarListadorStories(["--profile", profile.url, ...auth]);
+    const data = JSON.parse(out.toString("utf-8"));
+    const username = data.username || profile.username;
+    return {
+      username,
+      url: `https://www.instagram.com/stories/${username}/`,
+      stories: mapearStories(data, username),
+    };
+  } catch (err) {
+    const detalhe = err.stderr ? err.stderr.toString("utf-8").trim() : err.message;
+    throw new Error(
+      `não foi possível listar os Stories de @${profile.username}. ` +
+        `Confirme que o perfil está visível na conta autenticada e renove os cookies.\n${detalhe}`
+    );
+  }
+}
+
 /** Nome amigável do site, só para as mensagens do terminal. */
 function siteName(url) {
   const match = url.match(/^https?:\/\/(?:www\.)?([^/:]+)/i);
     return match ? match[1].replace(/\.(com|net|org|tv|be)(\.[a-z]{2})?$/i, "") : "link";
+}
+
+function safeOutputBase(value, fallback = "media") {
+  const safe = String(value || fallback)
+    .replace(/[^a-z0-9._-]+/gi, "_")
+    .replace(/^[._-]+|[._-]+$/g, "")
+    .slice(0, 80);
+  return safe || fallback;
 }
 
 /**
@@ -226,7 +352,10 @@ function downloadVideo(url, destDir, options = {}) {
       "--no-playlist",
       "--no-warnings",
       "--encoding", "utf-8",
-      "-o", path.join(destDir, "%(title)s [%(id)s].%(ext)s"),
+      "-o",
+      options.outputBase
+        ? path.join(destDir, `${safeOutputBase(options.outputBase)}.%(ext)s`)
+        : path.join(destDir, "%(title)s [%(id)s].%(ext)s"),
       url,
     ],
     destDir,
@@ -236,6 +365,29 @@ function downloadVideo(url, destDir, options = {}) {
 
   const captionPath = saveCaption(resultado.filePath, meta);
   return { ...resultado, captionPath, meta };
+}
+
+/** Baixa uma mídia de Story já descoberta (imagem ou vídeo). */
+function downloadStoryMedia(url, destDir, options = {}) {
+  const auth = cookieArgs(options);
+  const base = safeOutputBase(options.outputBase, "story");
+  const extension = safeOutputBase(options.extension, "media").toLowerCase();
+  console.log(
+    `  Baixando ${options.mediaType === "image" ? "imagem" : "vídeo"} do Story...`
+  );
+  return runDownload(
+    [
+      ...auth,
+      "--no-playlist",
+      "--no-warnings",
+      "--encoding", "utf-8",
+      "-o", path.join(destDir, `${base}.${extension}`),
+      url,
+    ],
+    destDir,
+    "",
+    url
+  ).filePath;
 }
 
 /**
@@ -257,7 +409,10 @@ function downloadAudio(url, destDir, options = {}) {
       "--no-playlist",
       "--no-warnings",
       "--encoding", "utf-8",
-      "-o", path.join(destDir, "audio_%(id)s.%(ext)s"),
+      "-o",
+      options.outputBase
+        ? path.join(destDir, `audio_${safeOutputBase(options.outputBase)}.%(ext)s`)
+        : path.join(destDir, "audio_%(id)s.%(ext)s"),
       url,
     ],
     destDir,
@@ -270,6 +425,7 @@ function downloadAudio(url, destDir, options = {}) {
 module.exports = {
   downloadVideo,
   downloadAudio,
+  downloadStoryMedia,
   getTitle,
   getInfo,
   getMetadata,
@@ -277,5 +433,9 @@ module.exports = {
   readCaption,
   isUrl,
   isYouTubeUrl,
+  isInstagramProfileUrl,
+  normalizarPerfilStories,
+  mapearStories,
+  listInstagramStories,
   siteName,
 };

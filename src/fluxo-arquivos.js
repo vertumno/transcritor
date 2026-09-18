@@ -116,6 +116,53 @@ function criarTrabalho(outputRoot, title, date = new Date()) {
   };
 }
 
+function criarLote(outputRoot, title, date = new Date()) {
+  const parent = criarTrabalho(outputRoot, title, date);
+
+  return {
+    ...parent,
+    item(itemTitle) {
+      const itemName = `${parent.timestamp} - ${sanitizarNome(itemTitle)}`;
+      return {
+        timestamp: parent.timestamp,
+        title: sanitizarNome(itemTitle),
+        baseName: itemName,
+        outputRoot,
+        stagingDir: parent.stagingDir,
+        finalDir: parent.finalDir,
+        file(ext) {
+          const suffix = ext.startsWith(".") ? ext : `.${ext}`;
+          return path.join(parent.stagingDir, itemName + suffix);
+        },
+        finalFile(ext) {
+          const suffix = ext.startsWith(".") ? ext : `.${ext}`;
+          return path.join(parent.finalDir, itemName + suffix);
+        },
+        archiveMedia(source, { move = true } = {}) {
+          const ext = path.extname(source) || ".media";
+          const destination = this.file(ext);
+          if (path.resolve(source) === path.resolve(destination)) return destination;
+          if (move) return moverArquivo(source, destination);
+          fs.copyFileSync(source, destination);
+          return destination;
+        },
+        complete() {
+          return parent.finalDir;
+        },
+        fail(error) {
+          const destination = this.file(".erro.txt");
+          fs.writeFileSync(
+            destination,
+            `${error && error.stack ? error.stack : error}\n`,
+            "utf-8"
+          );
+          return parent.stagingDir;
+        },
+      };
+    },
+  };
+}
+
 module.exports = {
   formatarDataHora,
   sanitizarNome,
@@ -124,4 +171,5 @@ module.exports = {
   estaDentro,
   moverArquivo,
   criarTrabalho,
+  criarLote,
 };
