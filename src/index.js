@@ -295,6 +295,7 @@ function parseArgs(argv) {
     else if (arg === "--srt") args.srt = true;
     else if (arg === "--forcar" || arg === "--force") args.force = true;
     else if (arg === "--baixar" || arg === "--download") args.download = true;
+    else if (arg === "--qualidade") args.qualidade = parseInt(argv[++i], 10) || null;
     else if (arg === "--cookies") args.cookies = argv[++i];
     else if (arg === "--navegador" || arg === "--browser") args.browser = argv[++i];
     else if (arg === "--api") args.api = true;
@@ -334,6 +335,7 @@ Uso:
 
 Opções:
       --baixar             Baixa o vídeo e organiza em _processados/
+      --qualidade <altura> Limita a altura do vídeo baixado (ex.: 480)
       --cookies <arquivo>  Cookies para sites que exigem login
       --navegador <nome>   Pega os cookies do navegador (firefox recomendado)
       --stories            Baixa imagens e vídeos ativos de um perfil
@@ -421,6 +423,7 @@ async function main() {
     cookiesFile: args.cookies,
     browser: args.browser,
     baseDir: BASE_DIR,
+    maxHeight: args.qualidade,
   };
 
   // Monta a fila: cada item sabe se é URL do YouTube ou arquivo local
@@ -580,7 +583,9 @@ async function main() {
           ({ filePath: saved, captionPath } = downloadVideo(
             item.value,
             job.stagingDir,
-            { ...authOptions, meta }
+            // Nome curto no staging: título longo estoura o MAX_PATH do Windows
+            // no yt-dlp. O archiveMedia renomeia para o nome final do trabalho.
+            { ...authOptions, meta, outputBase: meta.id }
           ));
         }
         const archivedVideo = job.archiveMedia(saved);

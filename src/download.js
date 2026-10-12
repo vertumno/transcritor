@@ -327,6 +327,12 @@ function runDownload(args, destDir, id, url) {
   throw new Error("o download terminou mas nenhum arquivo novo apareceu.");
 }
 
+/** Seletor de formato do yt-dlp; maxHeight limita a altura (ex.: 480). */
+function videoFormat(maxHeight) {
+  const h = maxHeight ? `[height<=${maxHeight}]` : "";
+  return `bv*${h}[ext=mp4]+ba[ext=m4a]/b${h}[ext=mp4]/bv*${h}+ba/b${h}`;
+}
+
 /**
  * Baixa o vídeo (imagem + som) para destDir.
  */
@@ -347,7 +353,7 @@ function downloadVideo(url, destDir, options = {}) {
   const resultado = runDownload(
     [
       ...auth,
-      "-f", "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b",
+      "-f", videoFormat(options.maxHeight),
       "--merge-output-format", "mp4",
       "--no-playlist",
       "--no-warnings",
